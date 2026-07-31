@@ -5,10 +5,9 @@ export default function (pi: ExtensionAPI) {
     description: "View the current system prompt",
     handler: async (_args, ctx) => {
       const prompt = ctx.getSystemPrompt();
-
-      await ctx.ui.editor(
-        `Current System Prompt (${prompt.length} chars)`,
-        prompt,
+      ctx.ui.notify(
+        `Current System Prompt (${prompt.length} chars)\n\n${prompt}`,
+        "info",
       );
     },
   });
