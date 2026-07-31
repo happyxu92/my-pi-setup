@@ -1,0 +1,16 @@
+{
+  "dependencies": {
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "prettier": "^3.9.5",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "format": "prettier --write \"extensions/**/*.{ts,cjs}\" \"*.json\"",
+    "format:check": "prettier --check \"extensions/**/*.{ts,cjs}\" \"*.json\"",
+    "test": "node --test --experimental-strip-types extensions/*/*.test.ts && npm --prefix extensions/file-search test"
+  }
+}
