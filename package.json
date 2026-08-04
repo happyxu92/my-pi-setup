@@ -12,8 +12,8 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "format": "prettier --write \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "format:check": "prettier --check \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "test": "node --test --experimental-strip-types extensions/*/*.test.ts"
+    "format": "prettier --write \"agent/extensions/**/*.{ts,cjs}\" \"*.json\"",
+    "format:check": "prettier --check \"agent/extensions/**/*.{ts,cjs}\" \"*.json\"",
+    "test": "node --test --experimental-strip-types agent/extensions/*/*.test.ts"
   }
 }
