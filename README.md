@@ -10,6 +10,7 @@ my-pi-setup/
 ├── agent/                     # pi agent 配置（软链接目标）
 │   ├── SYSTEM.MD              # pi 系统提示词（启动时加载）
 │   ├── extensions/            # pi 扩展
+│   │   ├── enable-grep-find.ts    # 默认启用 pi 原生 grep / find 工具
 │   │   ├── tokens-per-second.ts   # 状态栏实时显示 token/s 速率
 │   │   └── show-system-prompt.ts  # 注册 `system-prompt` 命令，查看当前系统提示
 │   └── prompts/               # pi Prompt 模板
@@ -62,10 +63,27 @@ ls -la ~/.pi/agent/SYSTEM.MD ~/.pi/agent/extensions ~/.pi/agent/prompts
 ~/.pi/agent/prompts      -> /Users/happy/.../my-pi-setup/agent/prompts
 ```
 
+### 3. 安装第三方扩展（可选）
+
+以下第三方扩展需通过 `pi install` 手动安装，不在本仓库管理：
+
+```bash
+pi install npm:pi-web-access
+pi install npm:pi-undo-redo
+```
+
+| 包名 | 说明 |
+|------|------|
+| **pi-web-access** | 网页搜索与内容抓取工具（web_search、fetch_content 等） |
+| **pi-undo-redo** | 会话撤销/重做命令（`/undo`、`/redo`） |
+
+> 验证安装：`pi list`
+
 ## 扩展说明
 
 | 扩展 | 说明 |
 |------|------|
+| **enable-grep-find** | 默认启用 pi 原生的 `grep` 和 `find` 工具（两者默认关闭）。通过 `session_start` 事件自动添加到活跃工具列表。 |
 | **tokens-per-second** | 在状态栏显示当前流式响应的 token 生成速率（`tok/s`）。流开始时显示 `… tok/s`，结束后显示实际速率。 |
 | **show-system-prompt** | 注册 `:system-prompt` 命令，运行后在通知中展示当前完整系统提示及字符数。 |
 
