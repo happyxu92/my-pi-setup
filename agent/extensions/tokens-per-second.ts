@@ -17,11 +17,11 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", "— tok/s"));
   });
 
-  pi.on("message_start", (event, ctx) => {
+  pi.on("message_start", (event) => {
     if (event.message.role !== "assistant") return;
 
     streamStartedAt = performance.now();
-    ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", "… tok/s"));
+    // Keep showing the most recently completed request while this one streams.
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -31,7 +31,6 @@ export default function (pi: ExtensionAPI) {
     streamStartedAt = undefined;
 
     if (startedAt === undefined || event.message.usage.output <= 0) {
-      ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", "— tok/s"));
       return;
     }
 
