@@ -233,6 +233,9 @@ export class SnapshotStore {
     string,
     Map<string, CachedVisibleLeaf>
   >();
+  private readonly configuredPrivateRepositories = new Set<string>();
+  private readonly validatedIgnoreQueries = new Set<string>();
+  private readonly manifestBySnapshot = new Map<string, SnapshotManifest>();
   private blobCacheBytes = 0;
 
   constructor(options: SnapshotStoreOptions = {}) {
@@ -373,6 +376,22 @@ export class SnapshotStore {
       );
 
       await this.assertTopology(topology, "捕获期间 topology 已变化");
+      const snapshotKey = checksum(
+        canonicalJson({
+          workspaceIdentity: topology.workspaceIdentity,
+          topologyFingerprint: topology.fingerprint,
+          coverage,
+          roots,
+        }),
+      );
+      const reusable = this.manifestBySnapshot.get(snapshotKey);
+      if (reusable !== undefined) {
+        // Reuse removes a redundant durable write, but still revalidates the
+        // private manifest so external deletion/corruption fails closed.
+        await this.loadManifest(reusable.manifestId);
+        for (const update of cacheUpdates) this.rememberVisibleLeaves(update);
+        return reusable;
+      }
       const content = {
         schemaVersion: SCHEMA_VERSION as 1,
         workspaceIdentity: topology.workspaceIdentity,
@@ -396,6 +415,7 @@ export class SnapshotStore {
         Buffer.from(canonicalJson(manifest), "utf8"),
       );
       this.manifestLocations.set(manifestId, manifestPath);
+      this.manifestBySnapshot.set(snapshotKey, manifest);
       for (const update of cacheUpdates) this.rememberVisibleLeaves(update);
       return manifest;
     } catch (error) {
@@ -966,7 +986,21 @@ export class SnapshotStore {
       artifactExclusions,
     );
     const inclusions = ownedRootInclusions(requestedInclusions, exclusions);
-    const staged = await this.stageWorktree(
+    // Git-backed roots query ignored paths through the source repository, so
+    // this proof can be collected in parallel with private-index staging.
+    // Synthetic roots share the private index and remain sequential.
+    const ignoredPresentPathsPromise = root.gitBacked
+      ? this.captureIgnoredPresentPaths(
+          absoluteRoot,
+          environment,
+          root.gitBacked,
+          inclusions,
+          exclusions,
+          exactExclusions,
+          transactionDirectory,
+        )
+      : undefined;
+    const stagedPromise = this.stageWorktree(
       absoluteRoot,
       environment,
       root.gitBacked,
@@ -976,16 +1010,22 @@ export class SnapshotStore {
       this.visibleLeafCache.get(gitDirectory),
       transactionDirectory,
     );
+    const [staged, ignoredPresentPaths] =
+      ignoredPresentPathsPromise === undefined
+        ? [
+            await stagedPromise,
+            await this.captureIgnoredPresentPaths(
+              absoluteRoot,
+              environment,
+              root.gitBacked,
+              inclusions,
+              exclusions,
+              exactExclusions,
+              transactionDirectory,
+            ),
+          ]
+        : await Promise.all([stagedPromise, ignoredPresentPathsPromise]);
     const coverage = rootCoverageFromInclusions(inclusions);
-    const ignoredPresentPaths = await this.captureIgnoredPresentPaths(
-      absoluteRoot,
-      environment,
-      root.gitBacked,
-      inclusions,
-      exclusions,
-      exactExclusions,
-      transactionDirectory,
-    );
     const treeId = (
       await this.runGit(["write-tree"], { cwd: absoluteRoot, env: environment })
     ).trim();
@@ -1030,15 +1070,27 @@ export class SnapshotStore {
         "--others",
         "--ignored",
         "--exclude-standard",
+        // A fully ignored directory protects every descendant. Collapsing it
+        // avoids statting tens of thousands of node_modules/build leaves on
+        // the synchronous user-input path.
+        "--directory",
+        "--no-empty-directory",
         "-z",
         "--",
         ...pathspecs,
       ],
       { cwd, env: gitBacked ? sourceGitEnvironment() : environment },
     );
-    const candidates: string[] = [];
+    const candidates: Array<{
+      readonly relativePath: string;
+      readonly directory: boolean;
+    }> = [];
     const seen = new Set<string>();
-    for (const relativePath of parseNulPaths(output)) {
+    for (const record of splitNulRecords(output)) {
+      const rawPath = decodeUtf8(record);
+      const directory = rawPath.endsWith("/");
+      const relativePath = directory ? rawPath.slice(0, -1) : rawPath;
+      relativeSafePath("/", relativePath);
       if (
         exclusions.some((excluded) =>
           isPathAtOrBelow(excluded, relativePath),
@@ -1054,33 +1106,82 @@ export class SnapshotStore {
         );
       }
       seen.add(relativePath);
-      candidates.push(relativePath);
+      candidates.push({ relativePath, directory });
     }
-    // ignored build/vendor trees 常含数万叶子；复用同一批量 metadata 协议，避免逐路径重复
-    // 遍历父目录。Native 与 fallback 都在叶子扫描前后复核共享父目录。
+    const directoryCandidates = candidates.filter(
+      (candidate) => candidate.directory,
+    );
+    const leafCandidates = candidates.filter(
+      (candidate) => !candidate.directory,
+    );
+    const directoryKinds = await this.collectIgnoredDirectoryKinds(
+      cwd,
+      directoryCandidates.map((candidate) => candidate.relativePath),
+    );
+    // Only ignored leaves that cannot be represented by an ignored directory
+    // need the batched native metadata protocol.
+    const leafPaths = leafCandidates.map((candidate) => candidate.relativePath);
     const nativeEntries = await this.inspectIgnoredMetadataBatches(
       cwd,
-      candidates,
+      leafPaths,
       requestDirectory,
     );
-    const kinds =
+    const leafKinds =
       nativeEntries === undefined
-        ? await this.collectIgnoredPresentKindsFallback(cwd, candidates)
+        ? await this.collectIgnoredPresentKindsFallback(cwd, leafPaths)
         : nativeEntries.map((entry) => entry.kind);
     const result: string[] = [];
-    for (let index = 0; index < candidates.length; index += 1) {
-      const relativePath = candidates[index]!;
-      const kind = kinds[index]!;
+    for (let index = 0; index < directoryCandidates.length; index += 1) {
+      const relativePath = directoryCandidates[index]!.relativePath;
+      const kind = directoryKinds[index]!;
+      if (kind === "absent") continue;
+      if (kind !== "directory") {
+        throw new SnapshotStoreError(
+          "capture_failed",
+          `ignored-present directory proof 类型无效：${relativePath}`,
+        );
+      }
+      result.push(relativePath);
+    }
+    for (let index = 0; index < leafCandidates.length; index += 1) {
+      const relativePath = leafCandidates[index]!.relativePath;
+      const kind = leafKinds[index]!;
       if (kind === "absent") continue;
       if (kind !== "file" && kind !== "symlink") {
         throw new SnapshotStoreError(
           "capture_failed",
-          `ignored-present proof 只接受叶子路径：${relativePath}`,
+          `ignored-present proof 只接受叶子或目录路径：${relativePath}`,
         );
       }
       result.push(relativePath);
     }
     return result.sort(comparePaths);
+  }
+
+  private async collectIgnoredDirectoryKinds(
+    cwd: string,
+    paths: readonly string[],
+  ): Promise<readonly ("absent" | "directory" | "other")[]> {
+    await assertNoSymlinkParents(cwd, paths);
+    const kinds = await mapConcurrentOrdered(
+      paths,
+      FILE_SYSTEM_INSPECTION_CONCURRENCY,
+      async (relativePath) => {
+        const metadata = await lstat(
+          join(cwd, ...relativePath.split("/")),
+        ).catch((error) => {
+          if (hasErrorCode(error, "ENOENT")) return null;
+          throw error;
+        });
+        return metadata === null
+          ? ("absent" as const)
+          : metadata.isDirectory() && !metadata.isSymbolicLink()
+            ? ("directory" as const)
+            : ("other" as const);
+      },
+    );
+    await assertNoSymlinkParents(cwd, paths);
+    return kinds;
   }
 
   private async inspectIgnoredMetadataBatches(
@@ -1488,6 +1589,8 @@ export class SnapshotStore {
     environment: Readonly<Record<string, string | undefined>>,
     gitBacked: boolean,
   ): Promise<void> {
+    const key = `${cwd}\0${gitBacked ? "source" : (environment.GIT_DIR ?? "private")}`;
+    if (this.validatedIgnoreQueries.has(key)) return;
     try {
       await this.runGit(
         [
@@ -1505,13 +1608,17 @@ export class SnapshotStore {
         throw error;
       }
     }
+    this.validatedIgnoreQueries.add(key);
   }
 
   private async ensurePrivateRepository(gitDirectory: string): Promise<void> {
     try {
       const metadata = await lstat(join(gitDirectory, "objects"));
       if (metadata.isDirectory()) {
-        await this.configurePrivateRepository(gitDirectory);
+        if (!this.configuredPrivateRepositories.has(gitDirectory)) {
+          await this.configurePrivateRepository(gitDirectory);
+          this.configuredPrivateRepositories.add(gitDirectory);
+        }
         return;
       }
     } catch (error) {
@@ -1525,6 +1632,7 @@ export class SnapshotStore {
     });
     this.visibleLeafCache.delete(gitDirectory);
     await this.configurePrivateRepository(gitDirectory);
+    this.configuredPrivateRepositories.add(gitDirectory);
   }
 
   private async configurePrivateRepository(

@@ -236,18 +236,15 @@ export class RootDiscovery {
     }
 
     const commonGitDir = resolve(absoluteRoot, lines[2]);
-    const remote = await this.gitOutput([
-      "-C",
-      absoluteRoot,
-      "config",
-      "--get",
-      "remote.origin.url",
-    ]);
-    const head = await this.gitOutput([
-      "-C",
-      absoluteRoot,
-      "rev-parse",
-      "HEAD",
+    const [remote, head] = await Promise.all([
+      this.gitOutput([
+        "-C",
+        absoluteRoot,
+        "config",
+        "--get",
+        "remote.origin.url",
+      ]),
+      this.gitOutput(["-C", absoluteRoot, "rev-parse", "HEAD"]),
     ]);
     return {
       kind: "active",

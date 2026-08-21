@@ -7,6 +7,7 @@ Local fork of `@davideasden/pi-undo@0.2.11`.
 - Supports project-local `excludeDirectories` configuration.
 - Normalizes Pi physical tree leaves before comparing them with pi-undo logical leaves, preventing `/tree` from creating a false `RECOVERY_REQUIRED` transaction.
 - Rejects undo/redo between manifests created with different exclusion configurations.
+- Collapses fully ignored directories in snapshot proofs, parallelizes independent Git checks, and reuses identical manifests to reduce prompt-time snapshot latency.
 
 The original documentation is preserved in [UPSTREAM.md](UPSTREAM.md). The upstream MIT license is preserved in [LICENSE](LICENSE).
 

@@ -128,7 +128,7 @@ interface MutationContext {
   readonly sourcePaths: ReadonlyMap<string, OwnedPath>;
   readonly targetPaths: ReadonlyMap<string, OwnedPath>;
   readonly plannedDeletePaths: ReadonlySet<string>;
-  readonly sourceIgnoredPaths: ReadonlySet<string>;
+  readonly sourceIgnoredPaths: IgnoredProofIndex;
   readonly mutationJournal: MutationJournal;
   readonly quarantine: QuarantineManager;
   ordinal: number;
@@ -788,7 +788,7 @@ export class RestoreEngine {
       sourcePaths: currentPaths,
       targetPaths,
       plannedDeletePaths: new Set(plan.deletePaths),
-      sourceIgnoredPaths: ignoredWorkspacePaths(current),
+      sourceIgnoredPaths: new IgnoredProofIndex(ignoredWorkspacePaths(current)),
       mutationJournal: options.mutationJournal,
       quarantine,
     };
@@ -1459,7 +1459,9 @@ export class RestoreEngine {
         sourcePaths: targetPaths,
         targetPaths: currentPaths,
         plannedDeletePaths: new Set(rollbackPlan.deletePaths),
-        sourceIgnoredPaths: ignoredWorkspacePaths(target),
+        sourceIgnoredPaths: new IgnoredProofIndex(
+          ignoredWorkspacePaths(target),
+        ),
         mutationJournal: options.mutationJournal,
         quarantine: new QuarantineManager({
           workspaceRoot: this.requestedWorkspaceRoot,
@@ -1643,7 +1645,7 @@ export class RestoreEngine {
         }
         if ((target.entry.kind === "directory") !== (kind === "directory"))
           continue;
-        if (context.sourceIgnoredPaths.has(path)) {
+        if (context.sourceIgnoredPaths.isProtected(path, target.entry.kind)) {
           await flushFiles();
           if (await this.entryMatches(manifestId, target)) continue;
           throw new Error(
@@ -1777,9 +1779,10 @@ export class RestoreEngine {
       return;
     }
     const allowedPaths = new Set<string>();
+    const ignoredPaths = new Set<string>();
     for (const manifest of allowedManifests) {
       for (const path of ignoredWorkspacePaths(manifest)) {
-        allowedPaths.add(path);
+        ignoredPaths.add(path);
       }
       const paths = await this.readOwnedPaths(manifest);
       for (const [path, owned] of paths) {
@@ -1788,6 +1791,7 @@ export class RestoreEngine {
         }
       }
     }
+    const allowedIgnoredProof = new IgnoredProofIndex(ignoredPaths);
 
     const exclusions = new Set(extraExclusions);
     if (mutationJournal !== undefined) {
@@ -1798,7 +1802,10 @@ export class RestoreEngine {
       excludePaths: exclusions.size === 0 ? undefined : [...exclusions],
     });
     for (const path of livePaths) {
-      if (!allowedPaths.has(path)) {
+      if (
+        !allowedPaths.has(path) &&
+        !allowedIgnoredProof.isProtected(path, "file")
+      ) {
         throw new Error(`complete coverage 发现 manifest 集合外路径：${path}`);
       }
     }
@@ -2173,12 +2180,10 @@ function ignoredWorkspacePaths(manifest: SnapshotManifest): Set<string> {
 /**
  * ignored 证明的前缀索引。
  *
- * 目录判定需要回答"是否存在以 `${path}/` 开头的 ignored 路径"。逐次线性扫描
- * 整个 set 会让"目录数 × ignored 数"变成平方项，因此这里预排序一次，
- * 之后每次判定用二分下界定位第一个不小于前缀的元素。
- *
- * 语义与线性扫描完全一致：只回答存在性，不改变 fail-closed 行为，也不放宽
- * 任何 ignored 保护。非目录仍走精确 `has()`。
+ * Proof paths form an antichain: a path can represent either one ignored leaf
+ * or a fully ignored directory. Ancestor lookup protects descendants of a
+ * collapsed directory; sorted descendant lookup protects a directory that
+ * contains one or more ignored leaves.
  */
 class IgnoredProofIndex {
   private readonly exact: ReadonlySet<string>;
@@ -2189,11 +2194,17 @@ class IgnoredProofIndex {
   }
 
   isProtected(path: string, kind: RestorePath["kind"]): boolean {
-    if (kind !== "directory") {
-      return this.exact.has(path);
+    if (this.exact.has(path)) return true;
+    // A collapsed ignored-directory proof protects every descendant.
+    for (
+      let separator = path.lastIndexOf("/");
+      separator >= 0;
+      separator = path.lastIndexOf("/", separator - 1)
+    ) {
+      if (this.exact.has(path.slice(0, separator))) return true;
     }
-    if (this.exact.size === 0) return false;
-    // 排序成本只在第一次目录判定时付出，纯文件计划完全不触发。
+    if (kind !== "directory" || this.exact.size === 0) return false;
+    // A directory is also protected when an ignored proof exists below it.
     this.sortedPaths ??= [...this.exact].sort();
     const sorted = this.sortedPaths;
     const prefix = `${path}/`;
