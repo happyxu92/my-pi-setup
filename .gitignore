@@ -3,6 +3,8 @@ node_modules/
 
 # Downloaded/generated executables
 bin/
+!agent/extensions/pi-undo/native/bin/
+!agent/extensions/pi-undo/native/bin/pi-undo-fs-darwin-arm64
 
 # Pi runtime and private state
 sessions/

@@ -11,6 +11,7 @@ my-pi-setup/
 │   ├── SYSTEM.MD              # pi 系统提示词（启动时加载）
 │   ├── extensions/            # pi 扩展
 │   │   ├── enable-grep-find.ts    # 默认启用 pi 原生 grep / find 工具
+│   │   ├── pi-undo/               # 本地 workspace undo/redo 插件
 │   │   ├── tokens-per-second.ts   # 状态栏实时显示 token/s 速率
 │   │   └── show-system-prompt.ts  # 注册 `system-prompt` 命令，查看当前系统提示
 │   ├── prompts/               # pi Prompt 模板
@@ -77,13 +78,13 @@ ls -la ~/.pi/agent/SYSTEM.MD ~/.pi/agent/extensions ~/.pi/agent/prompts ~/.pi/ag
 
 ```bash
 pi install npm:pi-web-access
-pi install npm:pi-undo-redo
 ```
 
 | 包名 | 说明 |
 |------|------|
 | **pi-web-access** | 网页搜索与内容抓取工具（web_search、fetch_content 等） |
-| **pi-undo-redo** | 会话撤销/重做命令（`/undo`、`/redo`） |
+
+本仓库已经包含本地 `pi-undo`。不要同时启用 `pi-undo-redo` 或 npm 版 `@davideasden/pi-undo`，否则 `/undo`、`/redo` 等命令会重复注册。
 
 > 验证安装：`pi list`
 
@@ -92,6 +93,7 @@ pi install npm:pi-undo-redo
 | 扩展 | 说明 |
 |------|------|
 | **enable-grep-find** | 默认启用 pi 原生的 `grep` 和 `find` 工具（两者默认关闭）。通过 `session_start` 事件自动添加到活跃工具列表。 |
+| **pi-undo** | 基于 `@davideasden/pi-undo@0.2.11`，增加目录排除配置并修复 `/tree` 逻辑 leaf 比较。项目配置见 `<workspace>/.pi/pi-undo.json`。 |
 | **tokens-per-second** | 在状态栏显示当前流式响应的 token 生成速率（`tok/s`）。流开始时显示 `… tok/s`，结束后显示实际速率。 |
 | **show-system-prompt** | 注册 `:system-prompt` 命令，运行后在通知中展示当前完整系统提示及字符数。 |
 
