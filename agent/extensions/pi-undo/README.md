@@ -4,7 +4,7 @@ Local fork of `@davideasden/pi-undo@0.2.11`.
 
 ## Local changes
 
-- Supports project-local `excludeDirectories` configuration.
+- Supports project-local `excludeDirectories` configuration and excludes common dependency/tool-cache directories by default.
 - Normalizes Pi physical tree leaves before comparing them with pi-undo logical leaves, preventing `/tree` from creating a false `RECOVERY_REQUIRED` transaction.
 - Rejects undo/redo between manifests created with different exclusion configurations.
 - Collapses fully ignored directories in snapshot proofs, parallelizes independent Git checks, and reuses identical manifests to reduce prompt-time snapshot latency.
@@ -21,7 +21,7 @@ Create `<workspace>/.pi/pi-undo.json`:
 }
 ```
 
-Paths are relative to the workspace root. Excluded directories:
+Paths are relative to the workspace root. Directories named `.pytest_cache`, `.ruff_cache`, `.venv`, or `node_modules` are automatically excluded at any depth and do not need to be listed. Excluded directories:
 
 - are not traversed during nested-repository discovery;
 - are not captured in workspace snapshots;

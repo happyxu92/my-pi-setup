@@ -7,6 +7,16 @@ import type { DiscoveryRoot } from "./model.ts";
 
 const DIRECTORY_SCAN_CONCURRENCY = 16;
 
+export const DEFAULT_EXCLUDED_DIRECTORY_NAMES = [
+  ".pytest_cache",
+  ".ruff_cache",
+  ".venv",
+  "node_modules",
+] as const;
+const DEFAULT_EXCLUDED_DIRECTORY_NAME_SET: ReadonlySet<string> = new Set(
+  DEFAULT_EXCLUDED_DIRECTORY_NAMES,
+);
+
 interface RepositoryInfo {
   readonly absoluteRoot: string;
   readonly commonGitDir: string;
@@ -34,6 +44,8 @@ interface DiscoveredRoot {
 export interface RootTopology {
   readonly workspaceIdentity: string;
   readonly roots: readonly DiscoveryRoot[];
+  /** Present tool-cache directories excluded by the built-in name policy. */
+  readonly ignoredDirectoryPaths: readonly string[];
   readonly fingerprint: string;
 }
 
@@ -98,7 +110,13 @@ export class RootDiscovery {
       );
     }
 
-    await this.scanDirectory(workspaceIdentity, workspaceIdentity, activeRoots);
+    const ignoredDirectoryPaths = new Set<string>();
+    await this.scanDirectory(
+      workspaceIdentity,
+      workspaceIdentity,
+      activeRoots,
+      ignoredDirectoryPaths,
+    );
     const gitlinkRoots = await this.discoverGitlinks(
       workspaceIdentity,
       activeRoots,
@@ -110,6 +128,7 @@ export class RootDiscovery {
     return {
       workspaceIdentity,
       roots,
+      ignoredDirectoryPaths: [...ignoredDirectoryPaths].sort(comparePaths),
       fingerprint: topologyFingerprint(workspaceIdentity, roots),
     };
   }
@@ -118,6 +137,7 @@ export class RootDiscovery {
     workspaceIdentity: string,
     directory: string,
     activeRoots: Map<string, DiscoveredRoot>,
+    ignoredDirectoryPaths: Set<string>,
   ): Promise<void> {
     let level: Array<{ readonly path: string; readonly inspect: boolean }> = [
       { path: directory, inspect: false },
@@ -133,7 +153,12 @@ export class RootDiscovery {
           level
             .slice(index, index + DIRECTORY_SCAN_CONCURRENCY)
             .map((candidate) =>
-              this.scanDirectoryNode(workspaceIdentity, candidate, activeRoots),
+              this.scanDirectoryNode(
+                workspaceIdentity,
+                candidate,
+                activeRoots,
+                ignoredDirectoryPaths,
+              ),
             ),
         );
         for (const group of children) next.push(...group);
@@ -146,6 +171,7 @@ export class RootDiscovery {
     workspaceIdentity: string,
     candidate: { readonly path: string; readonly inspect: boolean },
     activeRoots: Map<string, DiscoveredRoot>,
+    ignoredDirectoryPaths: Set<string>,
   ): Promise<Array<{ readonly path: string; readonly inspect: true }>> {
     if (
       isExcludedDirectory(
@@ -177,17 +203,30 @@ export class RootDiscovery {
     }
     const entries = await readdir(candidate.path, { withFileTypes: true });
     if (!(await isSafeDirectory(candidate.path, workspaceIdentity))) return [];
-    return entries
-      .filter(
-        (entry) =>
-          entry.name !== ".git" &&
-          !entry.isSymbolicLink() &&
-          entry.isDirectory(),
-      )
-      .map((entry) => ({
-        path: join(candidate.path, entry.name),
-        inspect: true as const,
-      }));
+    const children: Array<{ readonly path: string; readonly inspect: true }> =
+      [];
+    for (const entry of entries) {
+      if (
+        entry.name === ".git" ||
+        entry.isSymbolicLink() ||
+        !entry.isDirectory()
+      ) {
+        continue;
+      }
+      const path = join(candidate.path, entry.name);
+      if (DEFAULT_EXCLUDED_DIRECTORY_NAME_SET.has(entry.name)) {
+        if (
+          !isExcludedDirectory(workspaceIdentity, path, this.excludeDirectories)
+        ) {
+          ignoredDirectoryPaths.add(
+            workspaceRelativePath(workspaceIdentity, path),
+          );
+        }
+        continue;
+      }
+      children.push({ path, inspect: true });
+    }
+    return children;
   }
 
   private async inspectRepository(
@@ -303,6 +342,7 @@ export class RootDiscovery {
           workspaceIdentity,
           absolutePath,
         );
+        if (isDefaultExcludedPath(relativeRoot)) continue;
         const existing = [...activeRoots.entries()].find(
           ([, candidate]) => candidate.relativeRoot === relativeRoot,
         );
@@ -547,6 +587,12 @@ function isWithin(parent: string, candidate: string): boolean {
 
 function isStrictAncestor(parent: string, child: string): boolean {
   return parent === "." ? child !== "." : child.startsWith(`${parent}/`);
+}
+
+function isDefaultExcludedPath(relativePath: string): boolean {
+  return relativePath
+    .split("/")
+    .some((part) => DEFAULT_EXCLUDED_DIRECTORY_NAME_SET.has(part));
 }
 
 function isExcludedDirectory(

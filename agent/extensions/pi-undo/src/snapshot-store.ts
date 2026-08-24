@@ -45,7 +45,11 @@ import {
   pathSetsOverlap,
   relativeSafePath,
 } from "./path-safety.ts";
-import { RootDiscovery, type RootTopology } from "./root-discovery.ts";
+import {
+  DEFAULT_EXCLUDED_DIRECTORY_NAMES,
+  RootDiscovery,
+  type RootTopology,
+} from "./root-discovery.ts";
 import { WorkspaceLock } from "./workspace-lock.ts";
 
 const SCHEMA_VERSION = 1;
@@ -53,7 +57,7 @@ const COMPLETE_COVERAGE = "complete";
 const MANIFEST_SUFFIX = ".json";
 const GC_METADATA_FILE = "gc.json";
 const GC_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
-const IGNORE_POLICY = "git-check-ignore-v1";
+const IGNORE_POLICY = `git-check-ignore+directory-names-v2:${DEFAULT_EXCLUDED_DIRECTORY_NAMES.join(",")}`;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 const TREE_CACHE_LIMIT = 256;
 const TREE_BLOB_MEMBERSHIP_LIMIT = 65_536;
@@ -321,7 +325,14 @@ export class SnapshotStore {
         topology.workspaceIdentity,
         options.excludePaths,
       );
-      await this.assertTopology(topology, "捕获前 topology 已变化");
+      const currentTopology = await this.assertTopology(
+        topology,
+        "捕获前 topology 已变化",
+      );
+      const captureTopology: RootTopology = {
+        ...topology,
+        ignoredDirectoryPaths: currentTopology.ignoredDirectoryPaths,
+      };
       if (topology.roots.some((root) => root.state === "broken")) {
         throw new SnapshotStoreError(
           "capture_failed",
@@ -358,7 +369,7 @@ export class SnapshotStore {
             };
           }
           const captured = await this.captureRoot(
-            topology,
+            captureTopology,
             root,
             activeTransactionDirectory,
             scope,
@@ -375,7 +386,15 @@ export class SnapshotStore {
         captured.cacheUpdate === undefined ? [] : [captured.cacheUpdate],
       );
 
-      await this.assertTopology(topology, "捕获期间 topology 已变化");
+      const finalTopology = await this.assertTopology(
+        topology,
+        "捕获期间 topology 已变化",
+      );
+      assertIgnoredDirectoriesUnchanged(
+        currentTopology,
+        finalTopology,
+        "捕获期间默认忽略目录发生变化",
+      );
       const snapshotKey = checksum(
         canonicalJson({
           workspaceIdentity: topology.workspaceIdentity,
@@ -464,7 +483,10 @@ export class SnapshotStore {
         topology.workspaceIdentity,
         options.excludePaths,
       );
-      await this.assertTopology(topology, "可见路径枚举前 topology 已变化");
+      const currentTopology = await this.assertTopology(
+        topology,
+        "可见路径枚举前 topology 已变化",
+      );
       if (topology.roots.some((root) => root.state === "broken")) {
         throw new SnapshotStoreError(
           "capture_failed",
@@ -504,13 +526,20 @@ export class SnapshotStore {
           environment,
           root.gitBacked,
         );
-        const exclusions = topology.roots
-          .filter((candidate) =>
-            isStrictRootAncestor(root.relativeRoot, candidate.relativeRoot),
-          )
-          .map((candidate) =>
-            rootRelativePath(root.relativeRoot, candidate.relativeRoot),
-          );
+        const exclusions = [
+          ...topology.roots
+            .filter((candidate) =>
+              isStrictRootAncestor(root.relativeRoot, candidate.relativeRoot),
+            )
+            .map((candidate) =>
+              rootRelativePath(root.relativeRoot, candidate.relativeRoot),
+            ),
+          ...ownedIgnoredDirectories(
+            topology.roots,
+            root.relativeRoot,
+            currentTopology.ignoredDirectoryPaths,
+          ),
+        ];
         const exactExclusions = ownedArtifactExclusions(
           topology.roots,
           root.relativeRoot,
@@ -528,7 +557,15 @@ export class SnapshotStore {
           result.add(workspaceRelativePath(root.relativeRoot, relativePath));
         }
       }
-      await this.assertTopology(topology, "可见路径枚举期间 topology 已变化");
+      const finalTopology = await this.assertTopology(
+        topology,
+        "可见路径枚举期间 topology 已变化",
+      );
+      assertIgnoredDirectoriesUnchanged(
+        currentTopology,
+        finalTopology,
+        "可见路径枚举期间默认忽略目录发生变化",
+      );
       return [...result].sort(comparePaths);
     } catch (error) {
       if (error instanceof SnapshotStoreError) throw error;
@@ -973,13 +1010,21 @@ export class SnapshotStore {
     await this.validateIgnoreQuery(absoluteRoot, environment, root.gitBacked);
 
     const requestedInclusions = rootScopePathspecs(root.relativeRoot, scope);
-    const exclusions = topology.roots
-      .filter((candidate) =>
-        isStrictRootAncestor(root.relativeRoot, candidate.relativeRoot),
-      )
-      .map((candidate) =>
-        rootRelativePath(root.relativeRoot, candidate.relativeRoot),
-      );
+    const automaticExclusions = ownedIgnoredDirectories(
+      topology.roots,
+      root.relativeRoot,
+      topology.ignoredDirectoryPaths,
+    ).filter((path) => pathOverlapsInclusions(path, requestedInclusions));
+    const exclusions = collapseProtectedPaths([
+      ...topology.roots
+        .filter((candidate) =>
+          isStrictRootAncestor(root.relativeRoot, candidate.relativeRoot),
+        )
+        .map((candidate) =>
+          rootRelativePath(root.relativeRoot, candidate.relativeRoot),
+        ),
+      ...automaticExclusions,
+    ]);
     const exactExclusions = ownedArtifactExclusions(
       topology.roots,
       root.relativeRoot,
@@ -997,6 +1042,7 @@ export class SnapshotStore {
           inclusions,
           exclusions,
           exactExclusions,
+          automaticExclusions,
           transactionDirectory,
         )
       : undefined;
@@ -1021,6 +1067,7 @@ export class SnapshotStore {
               inclusions,
               exclusions,
               exactExclusions,
+              automaticExclusions,
               transactionDirectory,
             ),
           ]
@@ -1053,6 +1100,7 @@ export class SnapshotStore {
     inclusions: readonly string[] | null,
     exclusions: readonly string[],
     exactExclusions: ReadonlySet<string>,
+    protectedDirectories: readonly string[],
     requestDirectory: string,
   ): Promise<string[]> {
     if (inclusions === null) {
@@ -1084,8 +1132,11 @@ export class SnapshotStore {
     const candidates: Array<{
       readonly relativePath: string;
       readonly directory: boolean;
-    }> = [];
-    const seen = new Set<string>();
+    }> = protectedDirectories.map((relativePath) => ({
+      relativePath,
+      directory: true,
+    }));
+    const seen = new Set(protectedDirectories);
     for (const record of splitNulRecords(output)) {
       const rawPath = decodeUtf8(record);
       const directory = rawPath.endsWith("/");
@@ -1155,7 +1206,7 @@ export class SnapshotStore {
       }
       result.push(relativePath);
     }
-    return result.sort(comparePaths);
+    return collapseProtectedPaths(result);
   }
 
   private async collectIgnoredDirectoryKinds(
@@ -1894,7 +1945,7 @@ export class SnapshotStore {
   private async assertTopology(
     expected: RootTopology,
     message: string,
-  ): Promise<void> {
+  ): Promise<RootTopology> {
     const actual = await this.discovery.discover(expected.workspaceIdentity);
     const rootKindsMatch =
       actual.roots.length === expected.roots.length &&
@@ -1913,6 +1964,7 @@ export class SnapshotStore {
     ) {
       throw new SnapshotStoreError("capture_failed", message);
     }
+    return actual;
   }
 
   private async assertPrivateStore(workspaceIdentity: string): Promise<void> {
@@ -2062,6 +2114,29 @@ function captureExclusions(
   return [...result].sort(comparePaths);
 }
 
+function ownedIgnoredDirectories(
+  roots: readonly DiscoveryRoot[],
+  rootPath: string,
+  directories: readonly string[],
+): string[] {
+  const result: string[] = [];
+  for (const directory of directories) {
+    const owner = roots
+      .filter(
+        (candidate) =>
+          candidate.relativeRoot === "." ||
+          directory === candidate.relativeRoot ||
+          isStrictRootAncestor(candidate.relativeRoot, directory),
+      )
+      .sort(
+        (left, right) => right.relativeRoot.length - left.relativeRoot.length,
+      )[0];
+    if (owner?.relativeRoot !== rootPath || directory === rootPath) continue;
+    result.push(rootRelativePath(rootPath, directory));
+  }
+  return result.sort(comparePaths);
+}
+
 function ownedArtifactExclusions(
   roots: readonly DiscoveryRoot[],
   rootPath: string,
@@ -2118,6 +2193,29 @@ function rootScopePathspecs(
   return result.size === 0 ? null : [...result].sort(comparePaths);
 }
 
+function pathOverlapsInclusions(
+  path: string,
+  inclusions: readonly string[] | null,
+): boolean {
+  return (
+    inclusions !== null &&
+    (inclusions.length === 0 ||
+      inclusions.some(
+        (inclusion) =>
+          isPathAtOrBelow(inclusion, path) || isPathAtOrBelow(path, inclusion),
+      ))
+  );
+}
+
+function collapseProtectedPaths(paths: readonly string[]): string[] {
+  const result: string[] = [];
+  for (const path of [...new Set(paths)].sort(comparePaths)) {
+    if (result.some((parent) => isPathAtOrBelow(parent, path))) continue;
+    result.push(path);
+  }
+  return result;
+}
+
 function ownedRootInclusions(
   inclusions: readonly string[] | null,
   exclusions: readonly string[],
@@ -2148,6 +2246,22 @@ function rootCoverageFromInclusions(
     return COMPLETE_COVERAGE;
   }
   return `paths:${checksum(canonicalJson([...inclusions].sort(comparePaths)))}`;
+}
+
+function assertIgnoredDirectoriesUnchanged(
+  before: RootTopology,
+  after: RootTopology,
+  message: string,
+): void {
+  if (
+    before.ignoredDirectoryPaths.length !==
+      after.ignoredDirectoryPaths.length ||
+    before.ignoredDirectoryPaths.some(
+      (path, index) => path !== after.ignoredDirectoryPaths[index],
+    )
+  ) {
+    throw new SnapshotStoreError("capture_failed", message);
+  }
 }
 
 function treeObjectClosure(
