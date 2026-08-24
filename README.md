@@ -10,6 +10,7 @@ my-pi-setup/
 ├── agent/                     # pi agent 配置（软链接目标）
 │   ├── SYSTEM.MD              # pi 系统提示词（启动时加载）
 │   ├── extensions/            # pi 扩展
+│   │   ├── adversarial-loop/      # evaluator-generator 对抗式任务循环
 │   │   ├── enable-grep-find.ts    # 默认启用 pi 原生 grep / find 工具
 │   │   ├── pi-undo/               # 本地 workspace undo/redo 插件
 │   │   ├── tokens-per-second.ts   # 状态栏实时显示 token/s 速率
@@ -92,6 +93,7 @@ pi install npm:pi-web-access
 
 | 扩展 | 说明 |
 |------|------|
+| **adversarial-loop** | 注册 `adversarial_loop` 工具。使用相互独立的 evaluator/generator 子进程生成冻结验收标准、修改 workspace 并反复独立验收，直至通过或达到安全上限。 |
 | **enable-grep-find** | 默认启用 pi 原生的 `grep` 和 `find` 工具（两者默认关闭）。通过 `session_start` 事件自动添加到活跃工具列表。 |
 | **pi-undo** | 基于 `@davideasden/pi-undo@0.2.11`，增加目录排除配置并修复 `/tree` 逻辑 leaf 比较。项目配置见 `<workspace>/.pi/pi-undo.json`。 |
 | **tokens-per-second** | 在状态栏显示当前流式响应的 token 生成速率（`tok/s`）。流开始时显示 `… tok/s`，结束后显示实际速率。 |
