@@ -14,7 +14,7 @@ my-pi-setup/
 │   │   ├── enable-grep-find.ts    # 默认启用 pi 原生 grep / find 工具
 │   │   ├── pi-undo/               # 本地 workspace undo/redo 插件
 │   │   ├── tokens-per-second.ts   # 状态栏实时显示 token/s 速率
-│   │   └── show-system-prompt.ts  # 注册 `system-prompt` 命令，查看当前系统提示
+│   │   └── llm-context-inspector.ts # 查看当前 System Prompt 和活跃工具定义
 │   ├── prompts/               # pi Prompt 模板
 │   │   ├── commit.md              # 仅提交当前会话的改动
 │   │   └── commit-all.md          # 提交工作区所有改动
@@ -93,11 +93,11 @@ pi install npm:pi-web-access
 
 | 扩展 | 说明 |
 |------|------|
-| **adversarial-loop** | 注册 `adversarial_loop` 工具。使用相互独立的 evaluator/generator 子进程生成冻结验收标准、修改 workspace 并反复独立验收，直至通过或达到安全上限。 |
+| **adversarial-loop** | 注册 `adversarial_loop` 工具。面向有严格完成标准或高质量要求的代码与非代码交付物，用相互独立的 evaluator/generator 子进程生成冻结验收标准、反复改进并独立验收，直至通过或达到安全上限。 |
 | **enable-grep-find** | 默认启用 pi 原生的 `grep` 和 `find` 工具（两者默认关闭）。通过 `session_start` 事件自动添加到活跃工具列表。 |
 | **pi-undo** | 基于 `@davideasden/pi-undo@0.2.11`，增加目录排除配置并修复 `/tree` 逻辑 leaf 比较。项目配置见 `<workspace>/.pi/pi-undo.json`。 |
 | **tokens-per-second** | 在状态栏显示当前流式响应的 token 生成速率（`tok/s`）。流开始时显示 `… tok/s`，结束后显示实际速率。 |
-| **show-system-prompt** | 注册 `:system-prompt` 命令，运行后在通知中展示当前完整系统提示及字符数。 |
+| **llm-context-inspector** | 注册 `/system-prompt` 和 `/tools` 命令，分别展示当前完整 System Prompt 与活跃工具定义。 |
 
 ## Skill 说明
 

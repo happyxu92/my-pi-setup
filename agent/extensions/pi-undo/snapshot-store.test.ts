@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { GitRunner } from "./src/git-runner.ts";
 import { RestoreEngine } from "./src/restore-engine.ts";
 import { RootDiscovery } from "./src/root-discovery.ts";
 import { SnapshotStore } from "./src/snapshot-store.ts";
@@ -40,3 +41,53 @@ test("collapses a fully ignored directory while protecting its descendants", asy
     ]);
   }
 });
+
+test("uses literal ignore rules to collapse excluded directories", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-undo-workspace-"));
+  const storeRoot = await mkdtemp(join(tmpdir(), "pi-undo-store-"));
+  const git = new RecordingGitRunner();
+  try {
+    await mkdir(join(workspace, "outputs[1]"));
+    await mkdir(join(workspace, "outputs1"));
+    await writeFile(join(workspace, "outputs[1]", "ignored.txt"), "ignored");
+    await writeFile(join(workspace, "outputs1", "kept.txt"), "kept");
+
+    const discovery = new RootDiscovery({
+      git,
+      excludeDirectories: ["outputs[1]"],
+    });
+    const topology = await discovery.discover(workspace);
+    const store = new SnapshotStore({ storeRoot, discovery, git });
+    const manifest = await store.capture(topology);
+    const ignoredQuery = git.calls.find(
+      (args) => args.includes("ls-files") && args.includes("--ignored"),
+    );
+
+    assert.ok(ignoredQuery);
+    assert.equal(ignoredQuery.includes("--exclude=/outputs\\[1\\]/"), true);
+    assert.equal(
+      ignoredQuery.some((arg) => arg.startsWith(":(top,exclude,literal)")),
+      false,
+    );
+    assert.deepEqual(
+      (await store.listTree(manifest.manifestId, "."))
+        .filter((entry) => entry.kind !== "directory")
+        .map((entry) => entry.relativePath),
+      ["outputs1/kept.txt"],
+    );
+  } finally {
+    await Promise.all([
+      rm(workspace, { recursive: true, force: true }),
+      rm(storeRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+class RecordingGitRunner extends GitRunner {
+  readonly calls: string[][] = [];
+
+  override async run(...args: Parameters<GitRunner["run"]>) {
+    this.calls.push([...args[0]]);
+    return super.run(...args);
+  }
+}

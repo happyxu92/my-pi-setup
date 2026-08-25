@@ -1,7 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseEvaluatorOutput, type Criterion } from "./core.ts";
+import {
+  parseEvaluatorOutput,
+  runAdversarialLoopBatch,
+  type Criterion,
+} from "./core.ts";
+import { buildEvaluatorPrompt } from "./evaluator.ts";
+
+test("builds an independent evaluator prompt without a generator report or criteria count", () => {
+  const prompt = buildEvaluatorPrompt("Deliver the artifact", 1, undefined, {
+    taskSpecPath: "/loop/task-spec.md",
+    agentDirectory: "/loop/evaluator",
+  });
+
+  assert.doesNotMatch(prompt, /generator report/i);
+  assert.doesNotMatch(prompt, /2-10/);
+  assert.match(prompt, /Generate concrete acceptance criteria/);
+  assert.match(
+    prompt,
+    /judge task completion solely from the current deliverables/,
+  );
+});
 
 test("parses fenced evaluator JSON and accepts evidenced passing checks", () => {
   const evaluation = parseEvaluatorOutput(`The result is:\n\n\`\`\`json
@@ -99,4 +119,87 @@ test("rejects a first evaluation without criteria", () => {
       ),
     /acceptance criteria/,
   );
+});
+
+test("runs a batch concurrently while preserving loop order and usage", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const updates: string[] = [];
+
+  const result = await runAdversarialLoopBatch({
+    loops: [
+      { task: "first", maxIterations: 2 },
+      { task: "second", maxIterations: 3 },
+    ],
+    cwd: "/workspace",
+    model: "provider/model",
+    thinkingLevel: "high",
+    onUpdate: (update) => {
+      updates.push(
+        update.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+      );
+    },
+    runLoop: async (options) => {
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      options.onUpdate?.({
+        content: [{ type: "text", text: `checking ${options.task}` }],
+        details: {
+          status: "running",
+          task: options.task,
+          model: options.model,
+          maxIterations: options.maxIterations,
+          criteria: [],
+          rounds: [],
+        },
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, options.task === "first" ? 20 : 5),
+      );
+      active--;
+
+      return {
+        details: {
+          status: "completed",
+          task: options.task,
+          model: options.model,
+          maxIterations: options.maxIterations,
+          criteria: [],
+          rounds: [],
+        },
+        usage: {
+          input: 1,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 3,
+          cost: {
+            input: 0.1,
+            output: 0.2,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0.3,
+          },
+        },
+        latestGeneratorReport: `${options.task} report`,
+      };
+    },
+  });
+
+  assert.equal(maximumActive, 2);
+  assert.deepEqual(
+    result.details.loops.map((loop) => loop.task),
+    ["first", "second"],
+  );
+  assert.deepEqual(result.latestGeneratorReports, [
+    "first report",
+    "second report",
+  ]);
+  assert.equal(result.details.status, "completed");
+  assert.equal(result.usage.totalTokens, 6);
+  assert.ok(updates.some((update) => update.startsWith("[Loop 1/2]")));
+  assert.ok(updates.some((update) => update.startsWith("[Loop 2/2]")));
 });

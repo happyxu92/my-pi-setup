@@ -1108,9 +1108,6 @@ export class SnapshotStore {
     }
     const pathspecs =
       inclusions.length === 0 ? ["."] : inclusions.map(literalPathspec);
-    for (const excluded of exclusions) {
-      pathspecs.push(excludeLiteralPathspec(excluded));
-    }
     const output = await this.runGitBytes(
       [
         ...(gitBacked ? ["-c", "core.fsmonitor=false"] : []),
@@ -1118,9 +1115,12 @@ export class SnapshotStore {
         "--others",
         "--ignored",
         "--exclude-standard",
-        // A fully ignored directory protects every descendant. Collapsing it
-        // avoids statting tens of thousands of node_modules/build leaves on
-        // the synchronous user-input path.
+        // Ignore rules let --directory collapse unmanaged boundaries without
+        // the traversal cost caused by negative pathspecs. Results are still
+        // filtered below so excluded paths never enter the proof.
+        ...exclusions.map(
+          (excluded) => `--exclude=${literalIgnoreDirectory(excluded)}`,
+        ),
         "--directory",
         "--no-empty-directory",
         "-z",
@@ -1136,15 +1136,37 @@ export class SnapshotStore {
       relativePath,
       directory: true,
     }));
-    const seen = new Set(protectedDirectories);
-    for (const record of splitNulRecords(output)) {
+    const outputCandidates = splitNulRecords(output).map((record) => {
       const rawPath = decodeUtf8(record);
       const directory = rawPath.endsWith("/");
       const relativePath = directory ? rawPath.slice(0, -1) : rawPath;
       relativeSafePath("/", relativePath);
-      if (
+      return { relativePath, directory };
+    });
+    // Command-line ignore rules can make --directory report an unignored
+    // ancestor when all of its visible children are exclusions. Keep such an
+    // ancestor only when the workspace's standard ignore rules also ignore it.
+    const possibleCollapsedAncestors = outputCandidates
+      .filter(({ relativePath }) =>
         exclusions.some((excluded) =>
-          isPathAtOrBelow(excluded, relativePath),
+          isStrictPathAncestor(relativePath, excluded),
+        ),
+      )
+      .map(({ relativePath }) => relativePath);
+    const independentlyIgnoredAncestors = await this.queryStandardIgnoredPaths(
+      cwd,
+      environment,
+      gitBacked,
+      possibleCollapsedAncestors,
+    );
+    const seen = new Set(protectedDirectories);
+    for (const { relativePath, directory } of outputCandidates) {
+      if (
+        exclusions.some(
+          (excluded) =>
+            isPathAtOrBelow(excluded, relativePath) ||
+            (isStrictPathAncestor(relativePath, excluded) &&
+              !independentlyIgnoredAncestors.has(relativePath)),
         ) ||
         exactExclusions.has(relativePath)
       ) {
@@ -1207,6 +1229,35 @@ export class SnapshotStore {
       result.push(relativePath);
     }
     return collapseProtectedPaths(result);
+  }
+
+  private async queryStandardIgnoredPaths(
+    cwd: string,
+    environment: Readonly<Record<string, string | undefined>>,
+    gitBacked: boolean,
+    paths: readonly string[],
+  ): Promise<ReadonlySet<string>> {
+    if (paths.length === 0) return new Set();
+    try {
+      const output = await this.runGitBytes(
+        [
+          ...(gitBacked ? ["-c", "core.fsmonitor=false"] : []),
+          "check-ignore",
+          "--no-index",
+          "--stdin",
+          "-z",
+        ],
+        {
+          cwd,
+          env: gitBacked ? sourceGitEnvironment() : environment,
+          stdin: `${paths.join("\0")}\0`,
+        },
+      );
+      return new Set(parseNulPaths(output));
+    } catch (error) {
+      if (gitExitCode(error) === 1) return new Set();
+      throw error;
+    }
   }
 
   private async collectIgnoredDirectoryKinds(
@@ -2881,8 +2932,16 @@ function excludeLiteralPathspec(path: string): string {
   return `:(top,exclude,literal)${path}`;
 }
 
+function literalIgnoreDirectory(path: string): string {
+  return `/${path.replaceAll(/([*?[\]\\])/g, "\\$1")}/`;
+}
+
 function isPathAtOrBelow(parent: string, candidate: string): boolean {
   return candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
+function isStrictPathAncestor(parent: string, child: string): boolean {
+  return child.startsWith(`${parent}/`);
 }
 
 function isStrictRootAncestor(parent: string, child: string): boolean {
