@@ -11,12 +11,12 @@
 
 ## 工作流
 
-1. 第一个 **evaluator** 检查当前 workspace，根据任务生成具体、可观察的验收标准，并输出 `task-spec.md`；除正确性和硬约束外，也会按任务纳入完整性、受众适配、可用性、证据和成品质量等要求。
+1. 第一个 **evaluator** 检查当前 workspace，根据任务生成具体、可观察的验收标准，并输出 `task-spec.md`；除正确性和硬约束外，也会按任务纳入完整性、受众适配、可用性、证据和成品质量等要求。若 evaluator 的最终结构化输出无法解析，会在同一 RPC session 中追加纠错 prompt，默认最多重试 2 次（首次加两次重试，共最多 3 次输出）。
 2. 若未通过，新的 **generator** 根据验收标准和 evaluator 反馈直接创建或改进交付物，并执行适用的检查或复核。
 3. 下一轮启动全新的 evaluator；它不会收到 generator 报告，而是只根据原始任务、冻结的验收标准、当前交付物及自己的验证结果独立判断是否完成。
 4. 全部标准通过后结束；若始终未通过，则在安全上限处明确返回失败，不会伪报完成。
 
-每个子 agent 都启动全新的独立 session，并通过 `--session-dir` 将 session JSONL 保存在该轮对应的 `evaluator/` 或 `generator/` 目录中，因此不继承主 agent 或上一轮子 agent 的会话上下文。它们继承主会话当前的模型和 thinking level：
+每个子 agent 都以 RPC 模式启动全新的独立 session，并通过 `--session-dir` 将 session JSONL 保存在该轮对应的 `evaluator/` 或 `generator/` 目录中，因此不继承主 agent 或上一轮子 agent 的会话上下文。RPC 子进程在该 agent 完成前保持存活，使 evaluator 的结构化输出出错时可以在同一会话中接收纠错 user prompt；完成后通过关闭 stdin 正常退出。为保持无头执行且避免项目扩展阻塞，RPC 的 `select`、`confirm`、`input` 和 `editor` 对话请求会自动取消。它们继承主会话当前的模型和 thinking level：
 
 - evaluator 基础工具：`read,bash,edit,write,grep,find,ls`
 - generator 基础工具：`read,bash,edit,write,grep,find,ls`
@@ -52,7 +52,7 @@ Evaluator 的 `edit` / `write` 用于输出 `task-spec.md` 以及保存自己的
         └── ...
 ```
 
-- `evaluator-results.jsonl`：每行记录一次 evaluator 迭代的结构化结果；失败的子进程或解析也会记录错误。
+- `evaluator-results.jsonl`：每行记录一次 evaluator 迭代的结构化结果；结构化输出在默认 2 次同会话纠错后仍无法解析、子进程失败或其他解析错误也会记录错误。每个 agent 目录的 `result.json` 通过 `outputRetries` 记录实际结构化输出重试次数。
 - `generator-results.jsonl`：每行记录一次 generator 的工作总结、停止原因或错误。
 - 每次迭代都会预先创建独立的 `evaluator/` 和 `generator/` 目录。子 agent 的 session 使用 `session-<UTC timestamp>-<random>.jsonl` 文件名（例如 `session-20260826T032957Z-ALBXrg.jsonl`），其中包含 user prompt、会话消息、工具调用参数和结果，是完整会话记录；`events.jsonl` 只保存精简的执行时间线，包括 agent/turn 生命周期、工具名称与成功状态、compaction 和 retry 诊断，不重复保存消息正文、流式 delta、工具参数或工具结果。最终响应、诊断信息以及 agent 主动保存的 task 相关中间材料也保留在对应目录。角色 system prompt 直接通过 CLI 参数注入。
 
@@ -119,5 +119,5 @@ Evaluator 的 `edit` / `write` 用于输出 `task-spec.md` 以及保存自己的
 
 - evaluator 与 generator 暂时使用同一个模型和 thinking level。
 - evaluator 可使用 `edit` / `write` 保存 task spec 和中间材料，也可运行 `bash` 做验证；目前主要依靠 system prompt 约束其不修改 workspace 交付物，尚未加入 OS 级写入隔离。
-- 遇到子进程、模型或结构化输出错误时会终止并报告工具错误；并发模式下会同时取消其他 loop。任务未通过则持续到安全上限。
+- 遇到子进程或模型错误时会终止并报告工具错误。Evaluator 的结构化输出错误会先在同一 RPC session 中默认重试 2 次，仍失败才终止；并发模式下终止错误会同时取消其他 loop。任务未通过则持续到安全上限。
 - 每个子 agent 的最终报告和工具最终输出都有长度限制，避免撑爆主会话上下文。

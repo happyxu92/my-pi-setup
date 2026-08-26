@@ -8,6 +8,7 @@ import { cleanString, isRecord } from "./utils.ts";
 
 const MAX_CRITERIA = 12;
 const MAX_LIST_ITEMS = 16;
+export const DEFAULT_EVALUATOR_OUTPUT_RETRIES = 2;
 
 export const EVALUATOR_SYSTEM_PROMPT = `You are the evaluator in an adversarial delivery loop. You are independent from the generator and must judge the current deliverables, not the generator's confidence.
 
@@ -211,6 +212,29 @@ export function parseEvaluatorOutput(
         ? "All acceptance criteria passed."
         : "The task is not yet complete."),
   };
+}
+
+export function buildEvaluatorOutputRetryPrompt(
+  error: string,
+  retry: number,
+  maxRetries: number,
+) {
+  return `Your previous evaluator response could not be parsed as the required result (${retry}/${maxRetries}): ${JSON.stringify(error)}
+
+Return the same evaluation judgment as exactly one valid JSON object with this shape:
+{
+  "criteria": [
+    { "id": "C1", "description": "observable requirement", "verification": "how to verify it" }
+  ],
+  "checks": [
+    { "criterionId": "C1", "status": "pass|fail|unknown", "evidence": "specific evidence" }
+  ],
+  "completed": false,
+  "feedback": ["specific next action"],
+  "summary": "short overall judgment"
+}
+
+Include all required criteria and checks. Preserve the acceptance criteria and evidence from your evaluation. Do not inspect or modify the workspace again. Do not include Markdown fences, commentary, or additional JSON objects.`;
 }
 
 export function buildEvaluatorPrompt(

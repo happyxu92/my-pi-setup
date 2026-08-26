@@ -8,7 +8,12 @@ import {
   writeTaskSpec,
 } from "./artifacts.ts";
 import { runChildAgent } from "./child-agent.ts";
-import { buildEvaluatorPrompt, parseEvaluatorOutput } from "./evaluator.ts";
+import {
+  buildEvaluatorOutputRetryPrompt,
+  buildEvaluatorPrompt,
+  DEFAULT_EVALUATOR_OUTPUT_RETRIES,
+  parseEvaluatorOutput,
+} from "./evaluator.ts";
 import { buildGeneratorPrompt } from "./generator.ts";
 import type {
   AdversarialLoopBatchDetails,
@@ -113,6 +118,17 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         agentDirectory: iterationArtifacts.evaluatorDirectory,
         signal: options.signal,
         onActivity: (activity) => update(`Evaluation ${round}: ${activity}`),
+        outputValidation: {
+          maxRetries: DEFAULT_EVALUATOR_OUTPUT_RETRIES,
+          validate: (output) => {
+            parseEvaluatorOutput(output, criteria);
+          },
+          buildRetryPrompt: buildEvaluatorOutputRetryPrompt,
+          onRetry: (retry, maxRetries) =>
+            update(
+              `Evaluation ${round}: invalid structured output; requesting correction ${retry}/${maxRetries}`,
+            ),
+        },
       });
       addUsage(usage, evaluator.usage);
       evaluation = parseEvaluatorOutput(evaluator.output, criteria);
