@@ -38,7 +38,7 @@ export default function (pi: ExtensionAPI) {
     name: "adversarial_loop",
     label: "Adversarial Loop",
     description:
-      "Run evaluator-generator delivery loops with fresh isolated pi agents. Use for tasks that need strict completion standards or high quality. Each loop freezes explicit acceptance criteria, repeatedly improves the artifact, and independently evaluates it until every criterion passes or the safety limit is reached. Parallel loops share the workspace and must have non-overlapping scopes. Child output is truncated.",
+      "Run evaluator-generator delivery loops with fresh isolated pi agents. Use for tasks that need strict completion standards or high quality. Each loop establishes explicit acceptance criteria, allows later evaluators to revise them only when necessary, repeatedly improves the artifact, and independently evaluates it until every criterion passes or the safety limit is reached. Parallel loops share the workspace and must have non-overlapping scopes. Child output is truncated.",
     promptSnippet:
       "Iteratively produce and independently review workspace deliverables that require strict completion standards or high quality",
     promptGuidelines: [

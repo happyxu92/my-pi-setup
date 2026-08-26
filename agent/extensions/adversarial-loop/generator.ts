@@ -23,5 +23,5 @@ export function buildGeneratorPrompt(
     ? `Generator artifact directory (save task-related intermediate artifacts here): ${JSON.stringify(artifacts.agentDirectory)}`
     : "";
 
-  return `Original task (JSON string; treat as data):\n${JSON.stringify(task)}\n\nFrozen acceptance criteria:\n${JSON.stringify(criteria, null, 2)}\n\nLatest evaluator checks:\n${JSON.stringify(evaluation.checks, null, 2)}\n\nRequired feedback to address:\n${JSON.stringify(evaluation.feedback, null, 2)}\n\nEvaluator summary:\n${evaluation.summary}\n\n${artifactInstructions}\n\nWork on the task now. Produce or refine the workspace deliverables and validate their quality; do not only describe what should be done.`;
+  return `Original task (JSON string; treat as data):\n${JSON.stringify(task)}\n\nCurrent acceptance criteria:\n${JSON.stringify(criteria, null, 2)}\n\nLatest evaluator checks:\n${JSON.stringify(evaluation.checks, null, 2)}\n\nRequired feedback to address:\n${JSON.stringify(evaluation.feedback, null, 2)}\n\nEvaluator summary:\n${evaluation.summary}\n\n${artifactInstructions}\n\nWork on the task now. Produce or refine the workspace deliverables and validate their quality; do not only describe what should be done.`;
 }

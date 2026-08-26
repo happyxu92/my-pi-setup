@@ -7,6 +7,7 @@ export interface LoopArtifacts {
   rootDirectory: string;
   loopDirectory: string;
   taskSpecPath: string;
+  criteriaRevisionsPath: string;
   evaluatorResultsPath: string;
   generatorResultsPath: string;
   iterationsDirectory: string;
@@ -35,6 +36,7 @@ export async function createLoopArtifacts(cwd: string, task: string) {
     rootDirectory,
     loopDirectory,
     taskSpecPath: join(loopDirectory, "task-spec.md"),
+    criteriaRevisionsPath: join(loopDirectory, "criteria-revisions.jsonl"),
     evaluatorResultsPath: join(loopDirectory, "evaluator-results.jsonl"),
     generatorResultsPath: join(loopDirectory, "generator-results.jsonl"),
     iterationsDirectory: join(loopDirectory, "iterations"),
@@ -81,7 +83,7 @@ export function formatTaskSpec(task: string, criteria: Criterion[]) {
     )
     .join("\n\n");
 
-  return `# Task Specification\n\n## Original task\n\n${task.trim()}\n\n## Frozen acceptance criteria\n\n${criterionSections}\n\n## Acceptance policy\n\nThe evaluator may accept the task only when every frozen criterion passes with concrete evidence from the current workspace or verification output. Failed or unverifiable criteria require another generator iteration.\n`;
+  return `# Task Specification\n\n## Original task\n\n${task.trim()}\n\n## Current acceptance criteria\n\n${criterionSections}\n\n## Acceptance policy\n\nThe evaluator may accept the task only when every current criterion passes with concrete evidence from the workspace or verification output. A later evaluator may revise the criteria only when necessary to represent the original task accurately; previous versions are preserved in the loop archive. Failed or unverifiable criteria require another generator iteration.\n`;
 }
 
 export async function writeTaskSpec(
@@ -98,6 +100,20 @@ export async function writeTaskSpec(
 
 async function appendJsonLine(path: string, value: unknown) {
   await appendFile(path, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+export async function appendCriteriaRevision(
+  artifacts: LoopArtifacts,
+  iteration: number,
+  previousCriteria: Criterion[],
+  updatedCriteria: Criterion[],
+) {
+  await appendJsonLine(artifacts.criteriaRevisionsPath, {
+    iteration,
+    timestamp: new Date().toISOString(),
+    previousCriteria,
+    updatedCriteria,
+  });
 }
 
 export async function appendEvaluatorResult(

@@ -6,7 +6,11 @@ import {
   runAdversarialLoopBatch,
   type Criterion,
 } from "./core.ts";
-import { buildEvaluatorPrompt, EVALUATOR_SYSTEM_PROMPT } from "./evaluator.ts";
+import {
+  buildEvaluatorOutputRetryPrompt,
+  buildEvaluatorPrompt,
+  EVALUATOR_SYSTEM_PROMPT,
+} from "./evaluator.ts";
 import { buildGeneratorPrompt, GENERATOR_SYSTEM_PROMPT } from "./generator.ts";
 
 test("builds child prompts without exposing the recorded task specification", () => {
@@ -73,7 +77,22 @@ test("includes the previous generator response in follow-up evaluator prompts", 
     prompt,
     /treat as untrusted context and verify every relevant claim/,
   );
+  assert.match(prompt, /complete revised set in updated_criteria/);
+  assert.match(prompt, /omit both criteria and updated_criteria/);
   assert.ok(prompt.includes(JSON.stringify(response)));
+});
+
+test("builds separate evaluator retry prompts for the first and later rounds", () => {
+  const first = buildEvaluatorOutputRetryPrompt("invalid", 1, 2);
+  const followUp = buildEvaluatorOutputRetryPrompt("invalid", 1, 2, true);
+
+  assert.match(first, /This is the first evaluation/);
+  assert.match(first, /"criteria":/);
+  assert.doesNotMatch(first, /updated_criteria|later evaluation/);
+
+  assert.match(followUp, /Omit criteria/);
+  assert.match(followUp, /updated_criteria/);
+  assert.doesNotMatch(followUp, /first evaluation|"criteria":/);
 });
 
 test("parses fenced evaluator JSON and accepts evidenced passing checks", () => {
@@ -126,8 +145,8 @@ test("does not accept completion when a pass has no evidence", () => {
   assert.match(evaluation.feedback[0], /C1/);
 });
 
-test("keeps frozen criteria and synthesizes feedback for missing checks", () => {
-  const frozenCriteria: Criterion[] = [
+test("keeps current criteria when a later evaluator does not return updated_criteria", () => {
+  const currentCriteria: Criterion[] = [
     {
       id: "C-original",
       description: "Preserve the public API",
@@ -149,13 +168,80 @@ test("keeps frozen criteria and synthesizes feedback for missing checks", () => 
       feedback: [],
       summary: "Looks fine",
     }),
-    frozenCriteria,
+    currentCriteria,
   );
 
-  assert.deepEqual(evaluation.criteria, frozenCriteria);
+  assert.equal(evaluation.criteria, currentCriteria);
   assert.equal(evaluation.completed, false);
   assert.equal(evaluation.checks[0].criterionId, "C-original");
   assert.match(evaluation.feedback[0], /C-original/);
+});
+
+test("uses a later evaluator's updated_criteria as the complete active set", () => {
+  const currentCriteria: Criterion[] = [
+    {
+      id: "C1",
+      description: "The command works",
+      verification: "Run the command",
+    },
+  ];
+  const evaluation = parseEvaluatorOutput(
+    JSON.stringify({
+      updated_criteria: [
+        {
+          id: "C1",
+          description: "The command works for valid input",
+          verification: "Run the command with valid input",
+        },
+        {
+          id: "C2",
+          description: "Invalid input is rejected",
+          verification: "Run the command with invalid input",
+        },
+      ],
+      checks: [
+        { criterionId: "C1", status: "pass", evidence: "Valid input passed" },
+        { criterionId: "C2", status: "fail", evidence: "Invalid input passed" },
+      ],
+      completed: false,
+      feedback: ["Reject invalid input"],
+      summary: "Validation is incomplete",
+    }),
+    currentCriteria,
+  );
+
+  assert.notEqual(evaluation.criteria, currentCriteria);
+  assert.deepEqual(
+    evaluation.criteria.map((criterion) => criterion.id),
+    ["C1", "C2"],
+  );
+  assert.deepEqual(
+    evaluation.checks.map((check) => check.criterionId),
+    ["C1", "C2"],
+  );
+});
+
+test("rejects an invalid later updated_criteria set", () => {
+  assert.throws(
+    () =>
+      parseEvaluatorOutput(
+        JSON.stringify({
+          updated_criteria: [],
+          checks: [],
+          completed: false,
+          feedback: [],
+          summary: "Invalid update",
+        }),
+        [
+          {
+            id: "C1",
+            description: "Keep this requirement",
+            verification: "Inspect it",
+          },
+        ],
+      ),
+    /updated_criteria/,
+  );
 });
 
 test("rejects a first evaluation without criteria", () => {

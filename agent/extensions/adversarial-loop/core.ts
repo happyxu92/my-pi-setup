@@ -1,6 +1,7 @@
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 
 import {
+  appendCriteriaRevision,
   appendEvaluatorResult,
   appendGeneratorResult,
   createIterationArtifacts,
@@ -99,7 +100,7 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
   for (let round = 1; round <= options.maxIterations + 1; round++) {
     const iterationArtifacts = await createIterationArtifacts(artifacts, round);
     const evaluationLabel = criteria
-      ? `Evaluation ${round}: checking the frozen criteria`
+      ? `Evaluation ${round}: checking the current criteria`
       : "Evaluation 1: defining acceptance criteria and inspecting the workspace";
     update(evaluationLabel);
 
@@ -128,7 +129,13 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
           validate: (output) => {
             parseEvaluatorOutput(output, criteria);
           },
-          buildRetryPrompt: buildEvaluatorOutputRetryPrompt,
+          buildRetryPrompt: (error, retry, maxRetries) =>
+            buildEvaluatorOutputRetryPrompt(
+              error,
+              retry,
+              maxRetries,
+              criteria !== undefined,
+            ),
           onRetry: (retry, maxRetries) =>
             update(
               `Evaluation ${round}: invalid structured output; requesting correction ${retry}/${maxRetries}`,
@@ -137,7 +144,15 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
       });
       addUsage(usage, evaluator.usage);
       evaluation = parseEvaluatorOutput(evaluator.output, criteria);
-      if (!criteria) {
+      if (criteria && evaluation.criteria !== criteria) {
+        await appendCriteriaRevision(
+          artifacts,
+          round,
+          criteria,
+          evaluation.criteria,
+        );
+      }
+      if (!criteria || evaluation.criteria !== criteria) {
         await writeTaskSpec(artifacts, options.task, evaluation.criteria);
       }
     } catch (error) {
@@ -156,7 +171,7 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
       evaluation,
     );
 
-    criteria ??= evaluation.criteria;
+    criteria = evaluation.criteria;
     details.criteria = criteria;
     const loopRound: LoopRound = { round, evaluation };
     details.rounds.push(loopRound);
