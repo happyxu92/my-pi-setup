@@ -67,6 +67,7 @@ export default function (pi: ExtensionAPI) {
         cwd: ctx.cwd,
         model: `${ctx.model.provider}/${ctx.model.id}`,
         thinkingLevel: ctx.thinkingLevel ?? "off",
+        projectTrusted: ctx.isProjectTrusted(),
         signal,
         onUpdate,
       });

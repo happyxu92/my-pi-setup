@@ -1,10 +1,19 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  createWriteStream,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { finished } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { EVALUATOR_SYSTEM_PROMPT } from "./evaluator.ts";
 import { GENERATOR_SYSTEM_PROMPT } from "./generator.ts";
@@ -17,8 +26,9 @@ import {
   truncateUtf8,
 } from "./utils.ts";
 
-const EVALUATOR_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-const GENERATOR_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const CHILD_AGENT_TOOLS_EXTENSION = fileURLToPath(
+  new URL("./child-tools.ts", import.meta.url),
+);
 const ROLE_SYSTEM_PROMPTS = {
   evaluator: EVALUATOR_SYSTEM_PROMPT,
   generator: GENERATOR_SYSTEM_PROMPT,
@@ -42,8 +52,103 @@ interface RunChildAgentOptions {
   thinkingLevel: ThinkingLevel;
   prompt: string;
   agentDirectory: string;
+  projectTrusted: boolean;
   signal?: AbortSignal;
   onActivity?: (activity: string) => void;
+}
+
+export function findPiWebAccessExtension(agentDir = getAgentDir()) {
+  const extensionPath = join(
+    agentDir,
+    "npm",
+    "node_modules",
+    "pi-web-access",
+    "index.ts",
+  );
+  return existsSync(extensionPath) ? extensionPath : undefined;
+}
+
+function hasPiExtensionManifest(directory: string) {
+  try {
+    const manifest: unknown = JSON.parse(
+      readFileSync(join(directory, "package.json"), "utf8"),
+    );
+    return (
+      isRecord(manifest) &&
+      isRecord(manifest.pi) &&
+      Array.isArray(manifest.pi.extensions) &&
+      manifest.pi.extensions.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isProjectExtensionDirectory(directory: string) {
+  return (
+    existsSync(join(directory, "index.ts")) ||
+    existsSync(join(directory, "index.js")) ||
+    hasPiExtensionManifest(directory)
+  );
+}
+
+export function findProjectExtensionSources(
+  cwd: string,
+  projectTrusted: boolean,
+) {
+  if (!projectTrusted) return [];
+  const extensionDirectory = join(cwd, CONFIG_DIR_NAME, "extensions");
+
+  try {
+    return readdirSync(extensionDirectory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .flatMap((entry) => {
+        const entryPath = join(extensionDirectory, entry.name);
+        let isFile = entry.isFile();
+        let isDirectory = entry.isDirectory();
+        if (entry.isSymbolicLink()) {
+          try {
+            const stats = statSync(entryPath);
+            isFile = stats.isFile();
+            isDirectory = stats.isDirectory();
+          } catch {
+            return [];
+          }
+        }
+
+        if (isFile && /\.(?:js|ts)$/.test(entry.name)) return [entryPath];
+        if (isDirectory && isProjectExtensionDirectory(entryPath)) {
+          return [entryPath];
+        }
+        return [];
+      });
+  } catch {
+    return [];
+  }
+}
+
+export function getChildAgentExtensionPaths(
+  cwd: string,
+  projectTrusted: boolean,
+  agentDir = getAgentDir(),
+) {
+  const piWebAccessExtension = findPiWebAccessExtension(agentDir);
+  return [
+    ...findProjectExtensionSources(cwd, projectTrusted),
+    ...(piWebAccessExtension ? [piWebAccessExtension] : []),
+  ];
+}
+
+export function createChildSessionPath(
+  agentDirectory: string,
+  now = new Date(),
+  randomSuffix = randomBytes(4).toString("base64url"),
+) {
+  const timestamp = now
+    .toISOString()
+    .replaceAll(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+  return join(agentDirectory, `session-${timestamp}-${randomSuffix}.jsonl`);
 }
 
 function getPiInvocation(args: string[]) {
@@ -80,25 +185,75 @@ function getAssistantText(message: AssistantMessage) {
     .trim();
 }
 
+const ARCHIVED_EVENT_FIELDS = {
+  agent_start: [],
+  agent_end: ["willRetry"],
+  agent_settled: [],
+  turn_start: [],
+  turn_end: [],
+  tool_execution_start: ["toolCallId", "toolName"],
+  tool_execution_end: ["toolCallId", "toolName", "isError"],
+  compaction_start: ["reason"],
+  compaction_end: ["reason", "aborted", "willRetry", "errorMessage"],
+  auto_retry_start: ["attempt", "maxAttempts", "delayMs", "errorMessage"],
+  auto_retry_end: ["success", "attempt", "finalError"],
+  summarization_retry_scheduled: [
+    "attempt",
+    "maxAttempts",
+    "delayMs",
+    "errorMessage",
+  ],
+  summarization_retry_attempt_start: ["source", "reason"],
+  summarization_retry_finished: [],
+} as const;
+
+/**
+ * Keep only a compact execution timeline. Message bodies, tool arguments/results,
+ * streaming deltas, and session entries already live in the pi session JSONL.
+ */
+export function toArchivedEvent(event: Record<string, unknown>) {
+  const type = cleanString(event.type, 128);
+  if (!Object.hasOwn(ARCHIVED_EVENT_FIELDS, type)) return undefined;
+
+  const archived: Record<string, string | number | boolean> = { type };
+  const fields =
+    ARCHIVED_EVENT_FIELDS[type as keyof typeof ARCHIVED_EVENT_FIELDS];
+  for (const field of fields) {
+    const value = event[field];
+    if (typeof value === "string") archived[field] = cleanString(value);
+    else if (typeof value === "number" && Number.isFinite(value)) {
+      archived[field] = value;
+    } else if (typeof value === "boolean") archived[field] = value;
+  }
+  return archived;
+}
+
 export async function runChildAgent(options: RunChildAgentOptions) {
   options.signal?.throwIfAborted();
 
   await mkdir(options.agentDirectory, { recursive: true });
 
-  const tools =
-    options.role === "evaluator" ? EVALUATOR_TOOLS : GENERATOR_TOOLS;
+  const extensionPaths = [
+    ...getChildAgentExtensionPaths(options.cwd, options.projectTrusted),
+    CHILD_AGENT_TOOLS_EXTENSION,
+  ];
+  const sessionPath = createChildSessionPath(options.agentDirectory);
   const args = [
+    "--no-extensions",
+    ...extensionPaths.flatMap((path) => ["--extension", path]),
     "--mode",
     "json",
     "--print",
     "--session-dir",
     options.agentDirectory,
+    "--session",
+    sessionPath,
     "--model",
     options.model,
     "--thinking",
     options.thinkingLevel,
-    "--tools",
-    tools.join(","),
+    "--exclude-tools",
+    "adversarial_loop",
     "--append-system-prompt",
     ROLE_SYSTEM_PROMPTS[options.role],
     options.prompt,
@@ -151,6 +306,11 @@ export async function runChildAgent(options: RunChildAgentOptions) {
         }
         if (!isRecord(event)) return;
 
+        const archivedEvent = toArchivedEvent(event);
+        if (archivedEvent) {
+          eventsLog.write(`${JSON.stringify(archivedEvent)}\n`);
+        }
+
         if (event.type === "tool_execution_start") {
           const toolName = cleanString(event.toolName, 128) || "tool";
           options.onActivity?.(`using ${toolName}`);
@@ -185,7 +345,6 @@ export async function runChildAgent(options: RunChildAgentOptions) {
       };
 
       child.stdout.on("data", (data: Buffer) => {
-        eventsLog.write(data);
         stdoutBuffer += data.toString();
         const lines = stdoutBuffer.split("\n");
         stdoutBuffer = lines.pop() ?? "";

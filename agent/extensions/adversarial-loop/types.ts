@@ -67,6 +67,7 @@ export interface RunLoopOptions {
   cwd: string;
   model: string;
   thinkingLevel: ThinkingLevel;
+  projectTrusted: boolean;
   maxIterations: number;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback<AdversarialLoopDetails>;

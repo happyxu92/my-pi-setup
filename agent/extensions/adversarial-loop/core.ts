@@ -105,6 +105,7 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         cwd: options.cwd,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
+        projectTrusted: options.projectTrusted,
         prompt: buildEvaluatorPrompt(options.task, round, criteria, {
           taskSpecPath: artifacts.taskSpecPath,
           agentDirectory: iterationArtifacts.evaluatorDirectory,
@@ -161,6 +162,7 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         cwd: options.cwd,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
+        projectTrusted: options.projectTrusted,
         prompt: buildGeneratorPrompt(options.task, criteria, evaluation, {
           taskSpecPath: artifacts.taskSpecPath,
           agentDirectory: iterationArtifacts.generatorDirectory,
@@ -251,6 +253,7 @@ export async function runAdversarialLoopBatch(options: RunLoopBatchOptions) {
         cwd: options.cwd,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
+        projectTrusted: options.projectTrusted,
         maxIterations: loop.maxIterations,
         signal: batchAbortController.signal,
         onUpdate: (update) => {

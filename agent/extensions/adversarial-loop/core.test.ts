@@ -134,6 +134,7 @@ test("runs a batch concurrently while preserving loop order and usage", async ()
     cwd: "/workspace",
     model: "provider/model",
     thinkingLevel: "high",
+    projectTrusted: true,
     onUpdate: (update) => {
       updates.push(
         update.content
@@ -143,6 +144,7 @@ test("runs a batch concurrently while preserving loop order and usage", async ()
       );
     },
     runLoop: async (options) => {
+      assert.equal(options.projectTrusted, true);
       active++;
       maximumActive = Math.max(maximumActive, active);
       options.onUpdate?.({
