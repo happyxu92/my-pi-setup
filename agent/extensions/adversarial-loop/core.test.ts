@@ -6,21 +6,50 @@ import {
   runAdversarialLoopBatch,
   type Criterion,
 } from "./core.ts";
-import { buildEvaluatorPrompt } from "./evaluator.ts";
+import { buildEvaluatorPrompt, EVALUATOR_SYSTEM_PROMPT } from "./evaluator.ts";
+import { buildGeneratorPrompt, GENERATOR_SYSTEM_PROMPT } from "./generator.ts";
 
-test("builds an independent evaluator prompt without a generator report or criteria count", () => {
-  const prompt = buildEvaluatorPrompt("Deliver the artifact", 1, undefined, {
-    taskSpecPath: "/loop/task-spec.md",
-    agentDirectory: "/loop/evaluator",
-  });
+test("builds child prompts without exposing the recorded task specification", () => {
+  const evaluatorPrompt = buildEvaluatorPrompt(
+    "Deliver the artifact",
+    1,
+    undefined,
+    { agentDirectory: "/loop/evaluator" },
+  );
+  const generatorPrompt = buildGeneratorPrompt(
+    "Deliver the artifact",
+    [
+      {
+        id: "C1",
+        description: "The artifact exists",
+        verification: "Inspect it",
+      },
+    ],
+    {
+      criteria: [],
+      checks: [],
+      completed: false,
+      feedback: ["Create it"],
+      summary: "Missing",
+    },
+    { agentDirectory: "/loop/generator" },
+  );
 
-  assert.doesNotMatch(prompt, /generator report/i);
-  assert.doesNotMatch(prompt, /2-10/);
-  assert.match(prompt, /Generate concrete acceptance criteria/);
+  assert.doesNotMatch(evaluatorPrompt, /generator report/i);
+  assert.doesNotMatch(evaluatorPrompt, /2-10/);
+  assert.match(evaluatorPrompt, /Generate concrete acceptance criteria/);
   assert.match(
-    prompt,
+    evaluatorPrompt,
     /judge task completion solely from the current deliverables/,
   );
+  for (const prompt of [
+    EVALUATOR_SYSTEM_PROMPT,
+    evaluatorPrompt,
+    GENERATOR_SYSTEM_PROMPT,
+    generatorPrompt,
+  ]) {
+    assert.doesNotMatch(prompt, /task-spec|task specification/i);
+  }
 });
 
 test("parses fenced evaluator JSON and accepts evidenced passing checks", () => {

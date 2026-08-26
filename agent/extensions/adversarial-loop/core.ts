@@ -112,7 +112,6 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         thinkingLevel: options.thinkingLevel,
         projectTrusted: options.projectTrusted,
         prompt: buildEvaluatorPrompt(options.task, round, criteria, {
-          taskSpecPath: artifacts.taskSpecPath,
           agentDirectory: iterationArtifacts.evaluatorDirectory,
         }),
         agentDirectory: iterationArtifacts.evaluatorDirectory,
@@ -180,7 +179,6 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         thinkingLevel: options.thinkingLevel,
         projectTrusted: options.projectTrusted,
         prompt: buildGeneratorPrompt(options.task, criteria, evaluation, {
-          taskSpecPath: artifacts.taskSpecPath,
           agentDirectory: iterationArtifacts.generatorDirectory,
         }),
         agentDirectory: iterationArtifacts.generatorDirectory,

@@ -11,7 +11,7 @@
 
 ## 工作流
 
-1. 第一个 **evaluator** 检查当前 workspace，根据任务生成具体、可观察的验收标准，并输出 `task-spec.md`；除正确性和硬约束外，也会按任务纳入完整性、受众适配、可用性、证据和成品质量等要求。若 evaluator 的最终结构化输出无法解析，会在同一 RPC session 中追加纠错 prompt，默认最多重试 2 次（首次加两次重试，共最多 3 次输出）。
+1. 第一个 **evaluator** 检查当前 workspace，根据任务生成具体、可观察的验收标准；除正确性和硬约束外，也会按任务纳入完整性、受众适配、可用性、证据和成品质量等要求。控制器解析并冻结这些标准后，将其写入 `task-spec.md` 作为过程记录。若 evaluator 的最终结构化输出无法解析，会在同一 RPC session 中追加纠错 prompt，默认最多重试 2 次（首次加两次重试，共最多 3 次输出）。
 2. 若未通过，新的 **generator** 根据验收标准和 evaluator 反馈直接创建或改进交付物，并执行适用的检查或复核。
 3. 下一轮启动全新的 evaluator；它不会收到 generator 报告，而是只根据原始任务、冻结的验收标准、当前交付物及自己的验证结果独立判断是否完成。
 4. 全部标准通过后结束；若始终未通过，则在安全上限处明确返回失败，不会伪报完成。
@@ -25,7 +25,7 @@
 
 子进程仍使用 `--no-extensions` 禁止自动发现其他扩展，只通过显式 `--extension` 加载已信任 workspace 的 `.pi/extensions/`、全局 `pi-web-access`（若已安装）和用于恢复基础工具集的内部扩展。项目扩展注册的工具默认可用，但 `adversarial_loop` 工具会被排除，避免 child agent 递归启动新的 loop。不会加载其他全局扩展，也不会尝试联网安装插件。项目扩展与普通 pi extension 一样以当前用户权限执行，因此只应信任并加载已审查的代码。
 
-Evaluator 的 `edit` / `write` 用于输出 `task-spec.md` 以及保存自己的评估中间材料，不应修改 workspace 交付物。第一轮确定的验收标准作为后续评估的稳定基线；`task-spec.md` 生成后通常保持不变，只有发现会歪曲原任务或验收标准的明确实质性错误时才做最小修正，不会因为进入新一轮就例行调整。Generator 会收到任务、冻结的验收标准和 evaluator 反馈；evaluator 不会收到 generator 报告，只根据任务、标准和当前 workspace 独立验收。Loop 归档用于保存过程记录。
+Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不应修改 workspace 交付物。第一轮确定的验收标准作为后续评估的稳定基线；控制器生成的 `task-spec.md` 仅用于过程记录，不会把它的存在或路径告知 child agent。Generator 会直接收到任务、冻结的验收标准和 evaluator 反馈；evaluator 不会收到 generator 报告，只根据任务、标准和当前 workspace 独立验收。Loop 归档用于保存过程记录。
 
 ## Loop 归档
 
@@ -56,7 +56,7 @@ Evaluator 的 `edit` / `write` 用于输出 `task-spec.md` 以及保存自己的
 - `generator-results.jsonl`：每行记录一次 generator 的工作总结、停止原因或错误。
 - 每次迭代都会预先创建独立的 `evaluator/` 和 `generator/` 目录。子 agent 的 session 使用 `session-<UTC timestamp>-<random>.jsonl` 文件名（例如 `session-20260826T032957Z-ALBXrg.jsonl`），其中包含 user prompt、会话消息、工具调用参数和结果，是完整会话记录；`events.jsonl` 只保存精简的执行时间线，包括 agent/turn 生命周期、工具名称与成功状态、compaction 和 retry 诊断，不重复保存消息正文、流式 delta、工具参数或工具结果。最终响应、诊断信息以及 agent 主动保存的 task 相关中间材料也保留在对应目录。角色 system prompt 直接通过 CLI 参数注入。
 
-`.adversarial-loop/` 是工作流归档，不属于任务交付物；generator 不应修改 task spec、历史 JSONL 或其他 agent 的目录。若发现 task spec 存在明确的实质性问题，应在报告中指出并交由 evaluator 处理。
+`.adversarial-loop/` 是工作流归档，不属于任务交付物；其中的 `task-spec.md` 是控制器生成的验收标准记录。Child agent 应忽略归档内容，不应将其当成交付物或修改其他 agent 的目录。
 
 ## 代码结构
 
@@ -118,6 +118,6 @@ Evaluator 的 `edit` / `write` 用于输出 `task-spec.md` 以及保存自己的
 ## 当前基础版本的边界
 
 - evaluator 与 generator 暂时使用同一个模型和 thinking level。
-- evaluator 可使用 `edit` / `write` 保存 task spec 和中间材料，也可运行 `bash` 做验证；目前主要依靠 system prompt 约束其不修改 workspace 交付物，尚未加入 OS 级写入隔离。
+- evaluator 可使用 `edit` / `write` 保存中间材料，也可运行 `bash` 做验证；目前主要依靠 system prompt 约束其不修改 workspace 交付物，尚未加入 OS 级写入隔离。
 - 遇到子进程或模型错误时会终止并报告工具错误。Evaluator 的结构化输出错误会先在同一 RPC session 中默认重试 2 次，仍失败才终止；并发模式下终止错误会同时取消其他 loop。任务未通过则持续到安全上限。
 - 每个子 agent 的最终报告和工具最终输出都有长度限制，避免撑爆主会话上下文。

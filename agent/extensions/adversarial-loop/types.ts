@@ -6,7 +6,6 @@ export type ThinkingLevel =
 export type CheckStatus = "pass" | "fail" | "unknown";
 
 export interface AgentArtifactPaths {
-  taskSpecPath: string;
   agentDirectory: string;
 }
 
