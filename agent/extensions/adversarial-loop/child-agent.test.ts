@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -79,6 +80,10 @@ function handlePrompt(command) {
   observed.prompts.push(command);
   const mode = observed.prompts[0].message;
   const attempt = observed.prompts.length;
+
+  if (mode === "integration-stderr") {
+    process.stderr.write("raw diagnostic\n");
+  }
 
   if (mode === "integration-command-failure") {
     active = false;
@@ -444,6 +449,31 @@ test("RPC child corrects output in-session with UTF-8 framing and clean shutdown
       events.filter((event) => event.type === "agent_settled").length,
       2,
     );
+    assert.equal(existsSync(join(run.agentDirectory, "stderr.log")), false);
+    assert.equal(
+      existsSync(join(run.agentDirectory, "stderr-full.log")),
+      false,
+    );
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("RPC child archives raw and summarized stderr only when present", async () => {
+  const run = await runWithFakeRpc("integration-stderr");
+
+  try {
+    assert.ifError(run.error);
+    assert.ok(run.result);
+    assert.equal(run.result.stderr, "raw diagnostic\n");
+    assert.equal(
+      await readFile(join(run.agentDirectory, "stderr.log"), "utf8"),
+      "raw diagnostic\n",
+    );
+    assert.equal(
+      await readFile(join(run.agentDirectory, "stderr-full.log"), "utf8"),
+      "raw diagnostic\n",
+    );
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
@@ -494,6 +524,10 @@ test("RPC malformed output after settlement remains fatal", async () => {
     assert.match(
       await readFile(join(run.agentDirectory, "stderr.log"), "utf8"),
       /returned invalid RPC JSON/,
+    );
+    assert.equal(
+      existsSync(join(run.agentDirectory, "stderr-full.log")),
+      false,
     );
   } finally {
     await rm(run.root, { recursive: true, force: true });

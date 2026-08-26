@@ -44,8 +44,8 @@ Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不�
     │   │   ├── events.jsonl
     │   │   ├── final-response.txt
     │   │   ├── result.json
-    │   │   ├── stderr.log
-    │   │   └── stderr-full.log
+    │   │   ├── stderr.log       # 有诊断信息时才存在
+    │   │   └── stderr-full.log  # 子进程写入 stderr 时才存在
     │   └── generator/
     │       └── ...
     └── 002/
@@ -55,6 +55,7 @@ Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不�
 - `evaluator-results.jsonl`：每行记录一次 evaluator 迭代的结构化结果；结构化输出在默认 2 次同会话纠错后仍无法解析、子进程失败或其他解析错误也会记录错误。每个 agent 目录的 `result.json` 通过 `outputRetries` 记录实际结构化输出重试次数。
 - `generator-results.jsonl`：每行记录一次 generator 的工作总结、停止原因或错误。
 - 每次迭代都会预先创建独立的 `evaluator/` 和 `generator/` 目录。子 agent 的 session 使用 `session-<UTC timestamp>-<random>.jsonl` 文件名（例如 `session-20260826T032957Z-ALBXrg.jsonl`），其中包含 user prompt、会话消息、工具调用参数和结果，是完整会话记录；`events.jsonl` 只保存精简的执行时间线，包括 agent/turn 生命周期、工具名称与成功状态、compaction 和 retry 诊断，不重复保存消息正文、流式 delta、工具参数或工具结果。最终响应、诊断信息以及 agent 主动保存的 task 相关中间材料也保留在对应目录。角色 system prompt 直接通过 CLI 参数注入。
+- `stderr-full.log` 是子进程原始、未截断的 stderr 字节流；`stderr.log` 是写入 `result.json` 的同一份诊断摘要，最多保留 8 KiB，并可能额外包含 RPC 协议、stdin、spawn 或归档错误等控制器诊断。对应内容为空时不会创建这两个文件。
 
 `.adversarial-loop/` 是工作流归档，不属于任务交付物；其中的 `task-spec.md` 是控制器生成的验收标准记录。Child agent 应忽略归档内容，不应将其当成交付物或修改其他 agent 的目录。
 

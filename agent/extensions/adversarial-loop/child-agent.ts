@@ -326,17 +326,24 @@ export async function runChildAgent(options: RunChildAgentOptions) {
     join(options.agentDirectory, "events.jsonl"),
     { flags: "w", mode: 0o600 },
   );
-  const stderrLog = createWriteStream(
-    join(options.agentDirectory, "stderr-full.log"),
-    { flags: "w", mode: 0o600 },
-  );
+  let stderrFullLog: ReturnType<typeof createWriteStream> | undefined;
+  let stderrFullLogDone: Promise<void> | undefined;
   const archiveErrors: string[] = [];
   const eventsLogDone = finished(eventsLog).catch((error) => {
     archiveErrors.push(`events.jsonl: ${getErrorText(error)}`);
   });
-  const stderrLogDone = finished(stderrLog).catch((error) => {
-    archiveErrors.push(`stderr-full.log: ${getErrorText(error)}`);
-  });
+  const writeFullStderr = (data: Buffer) => {
+    if (!stderrFullLog) {
+      stderrFullLog = createWriteStream(
+        join(options.agentDirectory, "stderr-full.log"),
+        { flags: "w", mode: 0o600 },
+      );
+      stderrFullLogDone = finished(stderrFullLog).catch((error) => {
+        archiveErrors.push(`stderr-full.log: ${getErrorText(error)}`);
+      });
+    }
+    stderrFullLog.write(data);
+  };
 
   try {
     const invocation = getPiInvocation(args);
@@ -531,7 +538,7 @@ export async function runChildAgent(options: RunChildAgentOptions) {
     });
 
     child.stderr.on("data", (data: Buffer) => {
-      stderrLog.write(data);
+      writeFullStderr(data);
       result.stderr = truncateUtf8(
         `${result.stderr}${data.toString()}`,
         MAX_STDERR_BYTES,
@@ -645,23 +652,18 @@ export async function runChildAgent(options: RunChildAgentOptions) {
     }
   } finally {
     eventsLog.end();
-    stderrLog.end();
-    await Promise.all([eventsLogDone, stderrLogDone]);
+    if (stderrFullLog) stderrFullLog.end();
+    await Promise.all([eventsLogDone, stderrFullLogDone]);
     if (archiveErrors.length > 0) {
       result.stderr = truncateUtf8(
         `${result.stderr}\nArchive errors: ${archiveErrors.join("; ")}`,
         MAX_STDERR_BYTES,
       );
     }
-    await Promise.all([
+    const artifactWrites = [
       writeFile(
         join(options.agentDirectory, "final-response.txt"),
         result.output,
-        "utf8",
-      ),
-      writeFile(
-        join(options.agentDirectory, "stderr.log"),
-        result.stderr,
         "utf8",
       ),
       writeFile(
@@ -669,6 +671,16 @@ export async function runChildAgent(options: RunChildAgentOptions) {
         `${JSON.stringify(result, null, 2)}\n`,
         "utf8",
       ),
-    ]);
+    ];
+    if (result.stderr) {
+      artifactWrites.push(
+        writeFile(
+          join(options.agentDirectory, "stderr.log"),
+          result.stderr,
+          "utf8",
+        ),
+      );
+    }
+    await Promise.all(artifactWrites);
   }
 }
