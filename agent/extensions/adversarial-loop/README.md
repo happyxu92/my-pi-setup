@@ -13,7 +13,7 @@
 
 1. 第一个 **evaluator** 检查当前 workspace，根据任务生成具体、可观察的验收标准；除正确性和硬约束外，也会按任务纳入完整性、受众适配、可用性、证据和成品质量等要求。控制器解析并冻结这些标准后，将其写入 `task-spec.md` 作为过程记录。若 evaluator 的最终结构化输出无法解析，会在同一 RPC session 中追加纠错 prompt，默认最多重试 2 次（首次加两次重试，共最多 3 次输出）。
 2. 若未通过，新的 **generator** 根据验收标准和 evaluator 反馈直接创建或改进交付物，并执行适用的检查或复核。
-3. 下一轮启动全新的 evaluator；它不会收到 generator 报告，而是只根据原始任务、冻结的验收标准、当前交付物及自己的验证结果独立判断是否完成。
+3. 下一轮启动全新的 evaluator；它会收到上一轮 generator 的 response 作为未受信任的变更与检查线索，但仍只根据原始任务、冻结的验收标准、当前交付物及自己的验证结果独立判断是否完成。
 4. 全部标准通过后结束；若始终未通过，则在安全上限处明确返回失败，不会伪报完成。
 
 每个子 agent 都以 RPC 模式启动全新的独立 session，并通过 `--session-dir` 将 session JSONL 保存在该轮对应的 `evaluator/` 或 `generator/` 目录中，因此不继承主 agent 或上一轮子 agent 的会话上下文。RPC 子进程在该 agent 完成前保持存活，使 evaluator 的结构化输出出错时可以在同一会话中接收纠错 user prompt；完成后通过关闭 stdin 正常退出。为保持无头执行且避免项目扩展阻塞，RPC 的 `select`、`confirm`、`input` 和 `editor` 对话请求会自动取消。它们继承主会话当前的模型和 thinking level：
@@ -25,7 +25,7 @@
 
 子进程仍使用 `--no-extensions` 禁止自动发现其他扩展，只通过显式 `--extension` 加载已信任 workspace 的 `.pi/extensions/`、全局 `pi-web-access`（若已安装）和用于恢复基础工具集的内部扩展。项目扩展注册的工具默认可用，但 `adversarial_loop` 工具会被排除，避免 child agent 递归启动新的 loop。不会加载其他全局扩展，也不会尝试联网安装插件。项目扩展与普通 pi extension 一样以当前用户权限执行，因此只应信任并加载已审查的代码。
 
-Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不应修改 workspace 交付物。第一轮确定的验收标准作为后续评估的稳定基线；控制器生成的 `task-spec.md` 仅用于过程记录，不会把它的存在或路径告知 child agent。Generator 会直接收到任务、冻结的验收标准和 evaluator 反馈；evaluator 不会收到 generator 报告，只根据任务、标准和当前 workspace 独立验收。Loop 归档用于保存过程记录。
+Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不应修改 workspace 交付物。第一轮确定的验收标准作为后续评估的稳定基线；控制器生成的 `task-spec.md` 仅用于过程记录，不会把它的存在或路径告知 child agent。Generator 会直接收到任务、冻结的验收标准和 evaluator 反馈；后续 evaluator 会收到上一轮 generator response 作为未受信任的上下文，但必须自行验证其中的声明，并根据任务、标准和当前 workspace 独立验收。Loop 归档用于保存过程记录。
 
 ## Loop 归档
 

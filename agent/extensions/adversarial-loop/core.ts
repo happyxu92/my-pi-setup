@@ -111,9 +111,15 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         model: options.model,
         thinkingLevel: options.thinkingLevel,
         projectTrusted: options.projectTrusted,
-        prompt: buildEvaluatorPrompt(options.task, round, criteria, {
-          agentDirectory: iterationArtifacts.evaluatorDirectory,
-        }),
+        prompt: buildEvaluatorPrompt(
+          options.task,
+          round,
+          criteria,
+          {
+            agentDirectory: iterationArtifacts.evaluatorDirectory,
+          },
+          previousGeneratorReport,
+        ),
         agentDirectory: iterationArtifacts.evaluatorDirectory,
         signal: options.signal,
         onActivity: (activity) => update(`Evaluation ${round}: ${activity}`),
