@@ -1,0 +1,45 @@
+{
+  "name": "@happyxu92/pi-adversarial-loop",
+  "version": "0.1.0",
+  "description": "Evaluator-generator delivery loops for the Pi coding agent",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "coding-agent",
+    "adversarial-loop"
+  ],
+  "files": [
+    "README.md",
+    "LICENSE",
+    "artifacts.ts",
+    "child-agent.ts",
+    "child-tools.ts",
+    "core.ts",
+    "evaluator.ts",
+    "generator.ts",
+    "index.ts",
+    "types.ts",
+    "utils.ts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/happyxu92/my-pi-setup.git",
+    "directory": "agent/extensions/adversarial-loop"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}
