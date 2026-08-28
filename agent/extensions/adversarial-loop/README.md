@@ -1,41 +1,41 @@
 # Adversarial Loop
 
-`adversarial_loop` 是一个 evaluator-generator 交付工作流：它让相互独立的临时 pi agent 反复产出、审查和改进 workspace 中的交付物，直到满足验收标准。
+`adversarial_loop` is an evaluator-generator delivery workflow. It uses independent, temporary pi agents to repeatedly produce, review, and improve deliverables in the workspace until they satisfy the acceptance criteria.
 
-它的定位是处理以下任一类任务：
+It is intended for tasks that meet either of the following descriptions:
 
-- 有严格完成标准，需要独立、逐项验收；
-- 对完整性、准确性、连贯性、可用性或打磨程度有较高要求，需要多轮产出与审查。
+- They have strict completion requirements and need independent, criterion-by-criterion validation.
+- They demand a high degree of completeness, accuracy, coherence, usability, or polish and therefore benefit from multiple rounds of production and review.
 
-交付物既可以是代码，也可以是文档、规格、报告、方案、分析、配置或其他可落到 workspace 并被检查的产物。简单问答和微小修改通常不值得启动 loop。
+Deliverables may include code, documentation, specifications, reports, proposals, analyses, configuration, or any other artifact that can be written to the workspace and inspected. Simple questions and minor edits generally do not justify starting a loop.
 
-## 工作流
+## Workflow
 
-1. 第一个 **evaluator** 检查当前 workspace，根据任务生成具体、可观察的验收标准，并在 JSON 的 `criteria` 字段中返回；除正确性和硬约束外，也会按任务纳入完整性、受众适配、可用性、证据和成品质量等要求。控制器解析这些标准后，将其写入 `task-spec.md` 作为过程记录。若 evaluator 的最终结构化输出无法解析，会在同一 RPC session 中追加纠错 prompt，默认最多重试 2 次（首次加两次重试，共最多 3 次输出）。
-2. 若未通过，新的 **generator** 根据当前验收标准和 evaluator 反馈直接创建或改进交付物，并执行适用的检查或复核。
-3. 下一轮启动全新的 evaluator；它会收到上一轮 generator 的 response 作为未受信任的变更与检查线索，但仍只根据原始任务、当前验收标准、当前交付物及自己的验证结果独立判断是否完成。后续 evaluator 通常不返回 `criteria`；只有在检查或验证发现确有必要修正、澄清、去重，或补充原任务已隐含但遗漏的要求时，才通过 `updated_criteria` 返回完整的新标准集合。更新不得为了让当前交付物通过而弱化要求，也不得增加无关范围。
-4. 全部标准通过后结束；若始终未通过，则在安全上限处明确返回失败，不会伪报完成。
+1. The first **evaluator** inspects the current workspace, derives concrete and observable acceptance criteria from the task, and returns them in the JSON `criteria` field. In addition to correctness and hard constraints, the criteria may cover completeness, audience fit, usability, evidence, and production quality as appropriate for the task. After parsing the criteria, the controller writes them to `task-spec.md` as a process record. If the evaluator's final structured output cannot be parsed, the controller sends a corrective prompt in the same RPC session. By default, it retries up to twice, allowing at most three outputs in total: the initial output plus two retries.
+2. If the task does not pass, a new **generator** directly creates or improves the deliverables according to the current acceptance criteria and evaluator feedback, then runs any applicable checks or reviews.
+3. The next iteration starts a fresh evaluator. It receives the previous generator's response as untrusted context about changes and checks, but independently determines completion using only the original task, the current acceptance criteria, the current deliverables, and its own verification results. Later evaluators normally do not return `criteria`. They return a complete replacement set in `updated_criteria` only when inspection or verification reveals a genuine need to correct, clarify, deduplicate, or add an omitted requirement already implied by the original task. Updates must not weaken requirements merely to let the current deliverables pass, nor may they introduce unrelated scope.
+4. The loop ends when all criteria pass. If they never pass, the loop explicitly reports failure at the safety limit rather than falsely claiming completion.
 
-每个子 agent 都以 RPC 模式启动全新的独立 session，并通过 `--session-dir` 将 session JSONL 保存在该轮对应的 `evaluator/` 或 `generator/` 目录中，因此不继承主 agent 或上一轮子 agent 的会话上下文。RPC 子进程在该 agent 完成前保持存活，使 evaluator 的结构化输出出错时可以在同一会话中接收纠错 user prompt；完成后通过关闭 stdin 正常退出。为保持无头执行且避免项目扩展阻塞，RPC 的 `select`、`confirm`、`input` 和 `editor` 对话请求会自动取消。它们继承主会话当前的模型和 thinking level：
+Each child agent starts in RPC mode with a fresh, independent session. The `--session-dir` option stores session JSONL in the corresponding iteration's `evaluator/` or `generator/` directory, so child agents do not inherit conversation context from the parent agent or a previous child agent. The RPC subprocess remains alive until the agent finishes, allowing a corrective user prompt to be sent in the same session if the evaluator produces invalid structured output. It then exits cleanly when stdin is closed. To support headless execution and prevent project extensions from blocking, RPC dialog requests for `select`, `confirm`, `input`, and `editor` are automatically canceled. Child agents inherit the current model and thinking level from the parent session:
 
-- evaluator 基础工具：`read,bash,edit,write,grep,find,ls`
-- generator 基础工具：`read,bash,edit,write,grep,find,ls`
-- 父会话已信任项目且 `<workspace>/.pi/extensions/` 存在时，两类子 agent 都会显式加载该目录中的项目扩展及其工具
-- 如果用户级 pi 包目录中存在 `pi-web-access/index.ts`，两类子 agent 都会显式加载它，并启用 `web_search,source_check,fetch_content,get_search_content`
+- Evaluator base tools: `read,bash,edit,write,grep,find,ls`
+- Generator base tools: `read,bash,edit,write,grep,find,ls`
+- If the parent session trusts the project and `<workspace>/.pi/extensions/` exists, both types of child agent explicitly load the project extensions and their tools from that directory.
+- If `pi-web-access/index.ts` exists in the user-level pi package directory, both types of child agent explicitly load it and enable `web_search,source_check,fetch_content,get_search_content`.
 
-子进程仍使用 `--no-extensions` 禁止自动发现其他扩展，只通过显式 `--extension` 加载已信任 workspace 的 `.pi/extensions/`、全局 `pi-web-access`（若已安装）和用于恢复基础工具集的内部扩展。项目扩展注册的工具默认可用，但 `adversarial_loop` 工具会被排除，避免 child agent 递归启动新的 loop。不会加载其他全局扩展，也不会尝试联网安装插件。项目扩展与普通 pi extension 一样以当前用户权限执行，因此只应信任并加载已审查的代码。
+The subprocess still uses `--no-extensions` to disable automatic discovery of other extensions. It loads only the trusted workspace's `.pi/extensions/`, the global `pi-web-access` extension if installed, and an internal extension that restores the base toolset, all via explicit `--extension` arguments. Tools registered by project extensions are available by default, except for `adversarial_loop`, which is excluded to prevent child agents from recursively starting new loops. No other global extensions are loaded, and the workflow does not attempt to install plugins from the network. Project extensions run with the current user's permissions, just like ordinary pi extensions, so only reviewed code should be trusted and loaded.
 
-Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不应修改 workspace 交付物。第一轮确定的验收标准作为后续评估的稳定基线，但后续 evaluator 可在确有必要时通过 `updated_criteria` 提交完整替换集合；未更新时可省略 `criteria` 和 `updated_criteria`。控制器会把最新标准写入 `task-spec.md`，并在每次更新时将旧标准和新标准一并归档到 `criteria-revisions.jsonl`；这些控制文件仅用于过程记录，不会把其存在或路径告知 child agent。Generator 会直接收到任务、当前验收标准和 evaluator 反馈；后续 evaluator 会收到上一轮 generator response 作为未受信任的上下文，但必须自行验证其中的声明，并根据任务、标准和当前 workspace 独立验收。
+The evaluator's `edit` and `write` tools are intended only for saving its own intermediate evaluation materials; it should not modify workspace deliverables. The acceptance criteria established in the first iteration serve as a stable baseline for subsequent evaluations, but later evaluators may submit a complete replacement set through `updated_criteria` when genuinely necessary. When no update is needed, they may omit both `criteria` and `updated_criteria`. The controller writes the latest criteria to `task-spec.md`. Whenever the criteria change, it archives both the old and new sets in `criteria-revisions.jsonl`. These control files exist only as process records, and their presence and paths are not disclosed to child agents. The generator directly receives the task, current acceptance criteria, and evaluator feedback. Later evaluators receive the previous generator response as untrusted context, but must verify its claims themselves and independently evaluate the task against the criteria and current workspace.
 
-## Loop 归档
+## Loop Archive
 
-每个 loop 启动时都会在 `workspace/.adversarial-loop/` 下创建唯一目录。控制文件和非交付物中间结果不会在子 agent 退出时删除：
+Each loop creates a unique directory under `workspace/.adversarial-loop/` when it starts. Control files and non-deliverable intermediate results are retained after child agents exit:
 
 ```text
 .adversarial-loop/<loop-id>/
 ├── original-task.md
 ├── task-spec.md
-├── criteria-revisions.jsonl  # 仅在出现 criteria 更新后创建
+├── criteria-revisions.jsonl  # Created only after a criteria update
 ├── evaluator-results.jsonl
 ├── generator-results.jsonl
 └── iterations/
@@ -45,82 +45,82 @@ Evaluator 的 `edit` / `write` 仅用于保存自己的评估中间材料，不�
     │   │   ├── events.jsonl
     │   │   ├── final-response.txt
     │   │   ├── result.json
-    │   │   ├── stderr.log       # 有诊断信息时才存在
-    │   │   └── stderr-full.log  # 子进程写入 stderr 时才存在
+    │   │   ├── stderr.log       # Present only when diagnostics exist
+    │   │   └── stderr-full.log  # Present only when the subprocess writes to stderr
     │   └── generator/
     │       └── ...
     └── 002/
         └── ...
 ```
 
-- `criteria-revisions.jsonl`：仅在后续 evaluator 首次返回有效 `updated_criteria` 时创建，之后每次更新追加一行，记录轮次、旧标准和完整的新标准，确保旧版本不会因 `task-spec.md` 更新而丢失；没有更新时不会创建该文件。
-- `evaluator-results.jsonl`：每行记录一次 evaluator 迭代的规范化结构化结果；结构化输出在默认 2 次同会话纠错后仍无法解析、子进程失败或其他解析错误也会记录错误。每个 agent 目录的 `result.json` 通过 `outputRetries` 记录实际结构化输出重试次数。
-- `generator-results.jsonl`：每行记录一次 generator 的工作总结、停止原因或错误。
-- 每次迭代都会预先创建独立的 `evaluator/` 和 `generator/` 目录。子 agent 的 session 使用 `session-<UTC timestamp>-<random>.jsonl` 文件名（例如 `session-20260826T032957Z-ALBXrg.jsonl`），其中包含 user prompt、会话消息、工具调用参数和结果，是完整会话记录；`events.jsonl` 只保存精简的执行时间线，包括 agent/turn 生命周期、工具名称与成功状态、compaction 和 retry 诊断，不重复保存消息正文、流式 delta、工具参数或工具结果。最终响应、诊断信息以及 agent 主动保存的 task 相关中间材料也保留在对应目录。角色 system prompt 直接通过 CLI 参数注入。
-- `stderr-full.log` 是子进程原始、未截断的 stderr 字节流；`stderr.log` 是写入 `result.json` 的同一份诊断摘要，最多保留 8 KiB，并可能额外包含 RPC 协议、stdin、spawn 或归档错误等控制器诊断。对应内容为空时不会创建这两个文件。
+- `criteria-revisions.jsonl`: Created only when a later evaluator first returns a valid `updated_criteria`. Each subsequent update appends one line recording the iteration, the old criteria, and the complete new criteria, ensuring that older versions are not lost when `task-spec.md` is updated. The file is not created if the criteria never change.
+- `evaluator-results.jsonl`: Each line records the normalized structured result of one evaluator iteration. It also records errors when structured output still cannot be parsed after the default two in-session corrections, when the subprocess fails, or when another parsing error occurs. The `result.json` in each agent directory records the actual number of structured-output retries in `outputRetries`.
+- `generator-results.jsonl`: Each line records a generator work summary, stop reason, or error.
+- Every iteration pre-creates separate `evaluator/` and `generator/` directories. Child-agent sessions use filenames in the form `session-<UTC timestamp>-<random>.jsonl` (for example, `session-20260826T032957Z-ALBXrg.jsonl`). These files contain user prompts, conversation messages, tool-call arguments, and results, making them complete session records. `events.jsonl` stores only a compact execution timeline, including agent and turn lifecycle events, tool names and success states, compaction events, and retry diagnostics. It does not duplicate message bodies, streaming deltas, tool arguments, or tool results. Final responses, diagnostics, and task-related intermediate materials explicitly saved by an agent are also retained in the corresponding directory. Role-specific system prompts are injected directly through CLI arguments.
+- `stderr-full.log` contains the subprocess's raw, untruncated stderr byte stream. `stderr.log` contains the same diagnostic summary written to `result.json`, limited to 8 KiB, and may additionally include controller diagnostics for RPC protocol, stdin, spawn, or archival errors. Neither file is created when its corresponding content is empty.
 
-`.adversarial-loop/` 是工作流归档，不属于任务交付物；其中的 `task-spec.md` 是控制器生成的验收标准记录。Child agent 应忽略归档内容，不应将其当成交付物或修改其他 agent 的目录。
+`.adversarial-loop/` is a workflow archive, not part of the task deliverables. Its `task-spec.md` is the controller-generated record of acceptance criteria. Child agents should ignore archive contents and must not treat them as deliverables or modify other agents' directories.
 
-## 代码结构
+## Code Structure
 
-- `index.ts`：工具注册、参数 schema 和 pi 上下文适配。
-- `core.ts`：单 loop / 并发 batch 编排与最终结果格式化。
-- `child-agent.ts`：临时 pi 子进程的启动、取消、扩展选择、事件读取和 usage 汇总。
-- `child-tools.ts`：启用 child agent 基础工具，同时保留项目扩展注册的工具。
-- `evaluator.ts`：evaluator 提示词、验收输出解析和规范化。
-- `generator.ts`：generator 提示词构建。
-- `types.ts`：共享领域类型。
-- `utils.ts`：usage、字符串清理和截断等无状态工具。
+- `index.ts`: Tool registration, parameter schemas, and pi context adaptation.
+- `core.ts`: Single-loop and concurrent batch orchestration, plus final result formatting.
+- `child-agent.ts`: Temporary pi subprocess startup, cancellation, extension selection, event handling, and usage aggregation.
+- `child-tools.ts`: Enables the child agent's base tools while preserving tools registered by project extensions.
+- `evaluator.ts`: Evaluator prompts and acceptance-output parsing and normalization.
+- `generator.ts`: Generator prompt construction.
+- `types.ts`: Shared domain types.
+- `utils.ts`: Stateless utilities for usage data, string cleanup, truncation, and related operations.
 
-## 使用
+## Usage
 
-调用使用 `loops` 参数。支持单个或多个 loop：
+Invoke the tool with the `loops` parameter. It supports one or more loops:
 
 ```json
 {
   "loops": [
     {
-      "task": "在 docs/ 下交付……；必须覆盖……；面向……；用……复核",
+      "task": "Create ... under docs/; it must cover ...; write it for ...; verify it using ...",
       "maxIterations": 6
     }
   ]
 }
 ```
 
-多个独立 loop 可通过一次工具调用并发启动（最多 `n` 个）：
+Multiple independent loops can run concurrently in a single tool call, up to `n` loops:
 
 ```json
 {
   "loops": [
     {
-      "task": "在 packages/a 中实现……；运行……验证",
+      "task": "Implement ... in packages/a; run ... to verify it",
       "maxIterations": 4
     },
     {
-      "task": "在 packages/b 中实现……；运行……验证",
+      "task": "Implement ... in packages/b; run ... to verify it",
       "maxIterations": 6
     }
   ]
 }
 ```
 
-参数：
+Parameters:
 
-- `loops`：必填的 loop 列表，包含 `1-n` 项。
-- `loops[].task`：完整、自包含的任务描述。子 agent 不会看到主会话历史。
-- `loops[].maxIterations`：generator 的最大执行次数，默认 `6`，范围 `1-20`。最后一次 generator 后仍会再启动 evaluator 做最终验收。
+- `loops`: Required list of loops containing `1-n` items.
+- `loops[].task`: A complete, self-contained task description. Child agents cannot see the parent conversation history.
+- `loops[].maxIterations`: Maximum number of generator runs. Defaults to `6`; allowed range: `1-20`. A final evaluator still runs after the last generator iteration.
 
-并发 loop 共享当前 workspace，可能同时运行 generator。应为每项划分互不重叠的目录或文件范围；存在依赖关系或会修改相同文件的任务应使用单个 loop 串行完成。
+Concurrent loops share the current workspace and may run generators at the same time. Assign each loop a non-overlapping set of directories or files. Tasks with dependencies or tasks that modify the same files should run serially in a single loop.
 
-例如直接告诉主 agent：
+For example, tell the parent agent directly:
 
-> 使用 adversarial loop 实现用户登录接口，并确保现有测试通过。
+> Use adversarial loop to implement a user login endpoint and ensure that the existing tests pass.
 
-> 使用 adversarial loop 在 docs/architecture.md 中产出可评审的架构方案，要求覆盖备选方案、权衡、迁移步骤、风险和回滚策略，并达到可以直接进入评审的质量。
+> Use adversarial loop to produce a review-ready architecture proposal in docs/architecture.md. Cover alternatives, trade-offs, migration steps, risks, and rollback strategy, and make it polished enough to enter review immediately.
 
-## 当前基础版本的边界
+## Current Base-Version Limitations
 
-- evaluator 与 generator 暂时使用同一个模型和 thinking level。
-- evaluator 可使用 `edit` / `write` 保存中间材料，也可运行 `bash` 做验证；目前主要依靠 system prompt 约束其不修改 workspace 交付物，尚未加入 OS 级写入隔离。
-- 遇到子进程或模型错误时会终止并报告工具错误。Evaluator 的结构化输出错误会先在同一 RPC session 中默认重试 2 次，仍失败才终止；并发模式下终止错误会同时取消其他 loop。任务未通过则持续到安全上限。
-- 每个子 agent 的最终报告和工具最终输出都有长度限制，避免撑爆主会话上下文。
+- The evaluator and generator currently use the same model and thinking level.
+- The evaluator may use `edit` and `write` to save intermediate materials and may run `bash` for verification. Currently, a system prompt is the primary mechanism preventing it from modifying workspace deliverables; OS-level write isolation has not yet been implemented.
+- A subprocess or model error terminates the workflow and reports a tool error. Invalid evaluator structured output is retried twice by default in the same RPC session before the workflow terminates. In concurrent mode, a terminal error also cancels the other loops. If a task does not pass, the loop continues until the safety limit.
+- Each child agent's final report and the tool's final output have length limits to prevent the parent conversation context from growing excessively large.
