@@ -64,6 +64,7 @@ Each loop creates a unique directory under `workspace/.adversarial-loop/` when i
 ## Code Structure
 
 - `index.ts`: Tool registration, parameter schemas, and pi context adaptation.
+- `config.ts`: Default and CLI-configured maximum parallel loop count validation.
 - `core.ts`: Single-loop and concurrent batch orchestration, plus final result formatting.
 - `child-agent.ts`: Temporary pi subprocess startup, cancellation, extension selection, event handling, and usage aggregation.
 - `child-tools.ts`: Enables the child agent's base tools while preserving tools registered by project extensions.
@@ -87,7 +88,7 @@ Invoke the tool with the `loops` parameter. It supports one or more loops:
 }
 ```
 
-Multiple independent loops can run concurrently in a single tool call, up to `n` loops:
+Multiple independent loops can run concurrently in a single tool call. The default maximum is `6` loops:
 
 ```json
 {
@@ -106,11 +107,17 @@ Multiple independent loops can run concurrently in a single tool call, up to `n`
 
 Parameters:
 
-- `loops`: Required list of loops containing `1-n` items.
+- `loops`: Required list containing `1-6` loops by default.
 - `loops[].task`: A complete, self-contained task description. Child agents cannot see the parent conversation history.
 - `loops[].maxIterations`: Maximum number of generator runs. Defaults to `6`; allowed range: `1-20`. A final evaluator still runs after the last generator iteration.
 
 Concurrent loops share the current workspace and may run generators at the same time. Assign each loop a non-overlapping set of directories or files. Tasks with dependencies or tasks that modify the same files should run serially in a single loop.
+
+To change the maximum number of loops accepted in one tool call, start pi with the extension flag below. The value must be a positive integer:
+
+```bash
+pi --adversarial-loop-max-loops 10
+```
 
 For example, tell the parent agent directly:
 

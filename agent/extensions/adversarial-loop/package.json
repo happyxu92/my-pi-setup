@@ -16,6 +16,7 @@
     "artifacts.ts",
     "child-agent.ts",
     "child-tools.ts",
+    "config.ts",
     "core.ts",
     "evaluator.ts",
     "generator.ts",

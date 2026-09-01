@@ -1,10 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import {
+  DEFAULT_MAX_PARALLEL_LOOPS,
+  MAX_PARALLEL_LOOPS_FLAG,
+  parseMaxParallelLoops,
+} from "./config.ts";
 import { formatLoopBatchResult, runAdversarialLoopBatch } from "./core.ts";
 
 const DEFAULT_MAX_ITERATIONS = 6;
-const MAX_PARALLEL_LOOPS = 4;
 
 const taskParameter = Type.String({
   minLength: 1,
@@ -19,21 +23,23 @@ const maxIterationsParameter = Type.Integer({
   description: `Maximum generator attempts before the safety stop. Defaults to ${DEFAULT_MAX_ITERATIONS}.`,
 });
 
-const parameters = Type.Object({
-  loops: Type.Array(
-    Type.Object({
-      task: taskParameter,
-      maxIterations: Type.Optional(maxIterationsParameter),
-    }),
-    {
-      minItems: 1,
-      maxItems: MAX_PARALLEL_LOOPS,
-      description: `One to ${MAX_PARALLEL_LOOPS} loops to start concurrently. Each loop shares the current workspace, so scopes should not overlap.`,
-    },
-  ),
-});
+function createParameters(maxParallelLoops: number) {
+  return Type.Object({
+    loops: Type.Array(
+      Type.Object({
+        task: taskParameter,
+        maxIterations: Type.Optional(maxIterationsParameter),
+      }),
+      {
+        minItems: 1,
+        maxItems: maxParallelLoops,
+        description: `One to ${maxParallelLoops} loops to start concurrently. Each loop shares the current workspace, so scopes should not overlap.`,
+      },
+    ),
+  });
+}
 
-export default function (pi: ExtensionAPI) {
+function registerTool(pi: ExtensionAPI, maxParallelLoops: number) {
   pi.registerTool({
     name: "adversarial_loop",
     label: "Adversarial Loop",
@@ -48,7 +54,7 @@ export default function (pi: ExtensionAPI) {
       "Always pass adversarial_loop a loops array, including for a single task; concurrent loop tasks must have independent, non-overlapping workspace scopes.",
       "Do not claim success when adversarial_loop reports that its evaluator did not accept the task.",
     ],
-    parameters,
+    parameters: createParameters(maxParallelLoops),
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       if (!ctx.model)
@@ -86,5 +92,33 @@ export default function (pi: ExtensionAPI) {
         usage: result.usage,
       };
     },
+  });
+}
+
+export default function (pi: ExtensionAPI) {
+  pi.registerFlag(MAX_PARALLEL_LOOPS_FLAG, {
+    description: `Maximum number of concurrent adversarial loops (default: ${DEFAULT_MAX_PARALLEL_LOOPS})`,
+    type: "string",
+    default: String(DEFAULT_MAX_PARALLEL_LOOPS),
+  });
+
+  // Register the default immediately so the tool is available in startup flows
+  // that inspect tools before a session starts. Re-register it after CLI flags
+  // are resolved to apply a configured limit.
+  registerTool(pi, DEFAULT_MAX_PARALLEL_LOOPS);
+  pi.on("session_start", (_event, ctx) => {
+    let maxParallelLoops = DEFAULT_MAX_PARALLEL_LOOPS;
+    try {
+      maxParallelLoops = parseMaxParallelLoops(
+        pi.getFlag(MAX_PARALLEL_LOOPS_FLAG),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(
+        `Ignoring invalid --${MAX_PARALLEL_LOOPS_FLAG}: ${message}; using ${DEFAULT_MAX_PARALLEL_LOOPS}`,
+        "warning",
+      );
+    }
+    registerTool(pi, maxParallelLoops);
   });
 }
