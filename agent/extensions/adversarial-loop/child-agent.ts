@@ -1,12 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import {
-  createWriteStream,
-  existsSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-} from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { finished } from "node:stream/promises";
@@ -14,7 +8,12 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  CONFIG_DIR_NAME,
+  DefaultPackageManager,
+  getAgentDir,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 
 import { EVALUATOR_SYSTEM_PROMPT } from "./evaluator.ts";
 import { GENERATOR_SYSTEM_PROMPT } from "./generator.ts";
@@ -115,86 +114,55 @@ export async function runOutputRetryLoop(options: OutputRetryLoopOptions) {
   }
 }
 
-export function findPiWebAccessExtension(agentDir = getAgentDir()) {
-  const extensionPath = join(
-    agentDir,
-    "npm",
-    "node_modules",
-    "pi-web-access",
-    "index.ts",
-  );
-  return existsSync(extensionPath) ? extensionPath : undefined;
-}
+function createProjectOnlySettingsManager(cwd: string) {
+  const projectSettingsPath = join(cwd, CONFIG_DIR_NAME, "settings.json");
+  const sources: Record<"global" | "project", string | undefined> = {
+    global: undefined,
+    project: existsSync(projectSettingsPath)
+      ? readFileSync(projectSettingsPath, "utf8")
+      : undefined,
+  };
 
-function hasPiExtensionManifest(directory: string) {
-  try {
-    const manifest: unknown = JSON.parse(
-      readFileSync(join(directory, "package.json"), "utf8"),
-    );
-    return (
-      isRecord(manifest) &&
-      isRecord(manifest.pi) &&
-      Array.isArray(manifest.pi.extensions) &&
-      manifest.pi.extensions.length > 0
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isProjectExtensionDirectory(directory: string) {
-  return (
-    existsSync(join(directory, "index.ts")) ||
-    existsSync(join(directory, "index.js")) ||
-    hasPiExtensionManifest(directory)
+  return SettingsManager.fromStorage(
+    {
+      withLock(scope, fn) {
+        const next = fn(sources[scope]);
+        if (next !== undefined) sources[scope] = next;
+      },
+    },
+    { projectTrusted: true },
   );
 }
 
-export function findProjectExtensionSources(
-  cwd: string,
-  projectTrusted: boolean,
-) {
-  if (!projectTrusted) return [];
-  const extensionDirectory = join(cwd, CONFIG_DIR_NAME, "extensions");
-
-  try {
-    return readdirSync(extensionDirectory, { withFileTypes: true })
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .flatMap((entry) => {
-        const entryPath = join(extensionDirectory, entry.name);
-        let isFile = entry.isFile();
-        let isDirectory = entry.isDirectory();
-        if (entry.isSymbolicLink()) {
-          try {
-            const stats = statSync(entryPath);
-            isFile = stats.isFile();
-            isDirectory = stats.isDirectory();
-          } catch {
-            return [];
-          }
-        }
-
-        if (isFile && /\.(?:js|ts)$/.test(entry.name)) return [entryPath];
-        if (isDirectory && isProjectExtensionDirectory(entryPath)) {
-          return [entryPath];
-        }
-        return [];
-      });
-  } catch {
-    return [];
-  }
-}
-
-export function getChildAgentExtensionPaths(
+export async function findProjectExtensionSources(
   cwd: string,
   projectTrusted: boolean,
   agentDir = getAgentDir(),
 ) {
-  const piWebAccessExtension = findPiWebAccessExtension(agentDir);
-  return [
-    ...findProjectExtensionSources(cwd, projectTrusted),
-    ...(piWebAccessExtension ? [piWebAccessExtension] : []),
-  ];
+  if (!projectTrusted) return [];
+
+  const settingsManager = createProjectOnlySettingsManager(cwd);
+  const packageManager = new DefaultPackageManager({
+    cwd,
+    agentDir,
+    settingsManager,
+  });
+  const resolved = await packageManager.resolve(async () => "skip");
+
+  return resolved.extensions
+    .filter(
+      (extension) =>
+        extension.enabled && extension.metadata.scope === "project",
+    )
+    .map((extension) => extension.path);
+}
+
+export async function getChildAgentExtensionPaths(
+  cwd: string,
+  projectTrusted: boolean,
+  agentDir = getAgentDir(),
+) {
+  return findProjectExtensionSources(cwd, projectTrusted, agentDir);
 }
 
 export function createChildSessionPath(
@@ -292,7 +260,7 @@ export async function runChildAgent(options: RunChildAgentOptions) {
   await mkdir(options.agentDirectory, { recursive: true });
 
   const extensionPaths = [
-    ...getChildAgentExtensionPaths(options.cwd, options.projectTrusted),
+    ...(await getChildAgentExtensionPaths(options.cwd, options.projectTrusted)),
     CHILD_AGENT_TOOLS_EXTENSION,
   ];
   const sessionPath = createChildSessionPath(options.agentDirectory);

@@ -7,7 +7,6 @@ import test from "node:test";
 
 import {
   createChildSessionPath,
-  findPiWebAccessExtension,
   findProjectExtensionSources,
   getChildAgentExtensionPaths,
   runChildAgent,
@@ -190,14 +189,17 @@ async function readJson(path: string) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
-test("loads trusted project extensions and global pi-web-access", async () => {
+test("loads only trusted project extension configuration", async () => {
   const root = await mkdtemp(join(tmpdir(), "adversarial-loop-extensions-"));
   const workspace = join(root, "workspace");
   const agentDir = join(root, "agent");
-  const projectExtensions = join(workspace, ".pi", "extensions");
+  const projectPiDir = join(workspace, ".pi");
+  const projectExtensions = join(projectPiDir, "extensions");
   const directExtension = join(projectExtensions, "direct.ts");
-  const nestedExtension = join(projectExtensions, "nested");
-  const packagedExtension = join(projectExtensions, "packaged");
+  const configuredExtension = join(projectPiDir, "configured.ts");
+  const packageDirectory = join(projectPiDir, "vendor-package");
+  const packageExtension = join(packageDirectory, "src", "index.ts");
+  const globalExtension = join(agentDir, "extensions", "global.ts");
   const webAccessExtension = join(
     agentDir,
     "npm",
@@ -207,50 +209,67 @@ test("loads trusted project extensions and global pi-web-access", async () => {
   );
 
   try {
-    assert.equal(findPiWebAccessExtension(agentDir), undefined);
-    assert.deepEqual(findProjectExtensionSources(workspace, true), []);
+    assert.deepEqual(
+      await findProjectExtensionSources(workspace, true, agentDir),
+      [],
+    );
 
-    await mkdir(nestedExtension, { recursive: true });
-    await mkdir(join(packagedExtension, "src"), { recursive: true });
+    await mkdir(projectExtensions, { recursive: true });
+    await mkdir(dirname(packageExtension), { recursive: true });
+    await mkdir(dirname(globalExtension), { recursive: true });
     await mkdir(dirname(webAccessExtension), { recursive: true });
     await writeFile(directExtension, "export default function () {}\n", "utf8");
     await writeFile(
-      join(nestedExtension, "index.ts"),
+      configuredExtension,
       "export default function () {}\n",
       "utf8",
     );
     await writeFile(
-      join(packagedExtension, "package.json"),
+      join(packageDirectory, "package.json"),
       JSON.stringify({ pi: { extensions: ["src/index.ts"] } }),
       "utf8",
     );
     await writeFile(
-      join(packagedExtension, "src", "index.ts"),
+      packageExtension,
       "export default function () {}\n",
       "utf8",
     );
+    await writeFile(globalExtension, "export default function () {}\n", "utf8");
     await writeFile(
       webAccessExtension,
       "export default function () {}\n",
       "utf8",
     );
+    await writeFile(
+      join(projectPiDir, "settings.json"),
+      JSON.stringify({
+        extensions: ["./configured.ts"],
+        packages: ["./vendor-package"],
+      }),
+      "utf8",
+    );
 
-    assert.equal(findPiWebAccessExtension(agentDir), webAccessExtension);
-    assert.deepEqual(findProjectExtensionSources(workspace, false), []);
-    assert.deepEqual(findProjectExtensionSources(workspace, true), [
+    const expected = [
       directExtension,
-      nestedExtension,
-      packagedExtension,
-    ]);
-    assert.deepEqual(getChildAgentExtensionPaths(workspace, false, agentDir), [
-      webAccessExtension,
-    ]);
-    assert.deepEqual(getChildAgentExtensionPaths(workspace, true, agentDir), [
-      directExtension,
-      nestedExtension,
-      packagedExtension,
-      webAccessExtension,
-    ]);
+      configuredExtension,
+      packageExtension,
+    ].sort();
+    assert.deepEqual(
+      (await findProjectExtensionSources(workspace, false, agentDir)).sort(),
+      [],
+    );
+    assert.deepEqual(
+      (await findProjectExtensionSources(workspace, true, agentDir)).sort(),
+      expected,
+    );
+    assert.deepEqual(
+      (await getChildAgentExtensionPaths(workspace, false, agentDir)).sort(),
+      [],
+    );
+    assert.deepEqual(
+      (await getChildAgentExtensionPaths(workspace, true, agentDir)).sort(),
+      expected,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
