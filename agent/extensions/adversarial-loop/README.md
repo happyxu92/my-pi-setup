@@ -70,6 +70,7 @@ Each loop creates a unique directory under `workspace/.adversarial-loop/` when i
 - `child-tools.ts`: Enables the child agent's base tools while preserving tools registered by project extensions.
 - `evaluator.ts`: Evaluator prompts and acceptance-output parsing and normalization.
 - `generator.ts`: Generator prompt construction.
+- `goal.ts`: Persistent `/goal` state machine, prompt injection, auditing, and continuation control.
 - `types.ts`: Shared domain types.
 - `utils.ts`: Stateless utilities for usage data, string cleanup, truncation, and related operations.
 
@@ -117,6 +118,27 @@ To change the maximum number of loops accepted in one tool call, start pi with t
 
 ```bash
 pi --adversarial-loop-max-loops 10
+```
+
+## Goal Mode
+
+`/goal` runs the main agent toward a persistent goal and independently audits the workspace whenever that agent run ends. The goal task is carried in the system prompt; the extension sends only a short kickoff user message to start the run. If the evaluator does not accept the result, its failed checks and feedback are queued as a follow-up and the main agent continues automatically.
+
+```text
+/goal Implement the requested feature and verify it with the project tests
+/goal status
+/goal stop
+/goal resume
+```
+
+Goal state is appended to the current session as `goal-state` custom entries. It is restored from the active session branch after reloads, resumes, forks, and tree navigation. A previously running goal is restored as interrupted rather than starting work unexpectedly; `/goal resume` assigns it a new unique ID and a fresh continuation budget. An active or auditing goal blocks creation of another goal.
+
+Each audit invokes an evaluator-only adversarial loop with `maxIterations: 0`; this internal mode does not run a generator and does not change the public tool's `maxIterations` range. Ordinary user input is blocked while an audit is inspecting the workspace, but `/goal status` and `/goal stop` remain available. Errors and unverified results never mark the goal complete.
+
+The default automatic continuation limit is 25. Configure it with a positive integer:
+
+```bash
+pi --adversarial-loop-goal-max-continuations 40
 ```
 
 For example, tell the parent agent directly:

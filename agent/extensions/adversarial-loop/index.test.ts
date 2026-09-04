@@ -5,11 +5,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import adversarialLoopExtension from "./index.ts";
 
-function loadExtension(flagValue: string) {
+function loadExtension(flagValue: string, goalFlagValue = "25") {
   const tools: Array<{
     parameters: { properties: { loops: { maxItems: number } } };
   }> = [];
-  let sessionStart: ((event: unknown, ctx: unknown) => void) | undefined;
+  const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => void> =
+    [];
   const notifications: string[] = [];
 
   const pi = {
@@ -17,25 +18,27 @@ function loadExtension(flagValue: string) {
     registerTool(tool: (typeof tools)[number]) {
       tools.push(tool);
     },
-    getFlag() {
-      return flagValue;
+    registerCommand() {},
+    appendEntry() {},
+    getFlag(name: string) {
+      return name === "adversarial-loop-max-loops" ? flagValue : goalFlagValue;
     },
-    on(event: string, handler: typeof sessionStart) {
-      if (event === "session_start") sessionStart = handler;
+    on(event: string, handler: (event: unknown, ctx: unknown) => void) {
+      if (event === "session_start") sessionStartHandlers.push(handler);
     },
   } as unknown as ExtensionAPI;
 
   adversarialLoopExtension(pi);
-  sessionStart?.(
-    {},
-    {
-      ui: {
-        notify(message: string) {
-          notifications.push(message);
-        },
+  const ctx = {
+    sessionManager: { getBranch: () => [] },
+    ui: {
+      notify(message: string) {
+        notifications.push(message);
       },
+      setStatus() {},
     },
-  );
+  };
+  for (const handler of sessionStartHandlers) handler({}, ctx);
   return { tools, notifications };
 }
 
@@ -55,4 +58,9 @@ test("falls back to six for an invalid configured maximum", () => {
   const { tools, notifications } = loadExtension("0");
   assert.equal(tools.at(-1)?.parameters.properties.loops.maxItems, 6);
   assert.match(notifications[0], /using 6/);
+});
+
+test("warns and falls back for an invalid Goal continuation limit", () => {
+  const { notifications } = loadExtension("6", "0");
+  assert.ok(notifications.some((message) => /using 25/.test(message)));
 });

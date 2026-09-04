@@ -71,3 +71,33 @@ export interface RunLoopOptions {
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback<AdversarialLoopDetails>;
 }
+
+export type GoalStatus =
+  | "running"
+  | "auditing"
+  | "stopped"
+  | "completed"
+  | "exhausted"
+  | "error"
+  | "interrupted";
+
+export interface GoalAuditSummary {
+  completed: boolean;
+  summary: string;
+  feedback: string[];
+  loopDirectory?: string;
+}
+
+export interface GoalState {
+  version: 1;
+  id: string;
+  previousId?: string;
+  task: string;
+  status: GoalStatus;
+  continuationCount: number;
+  maxContinuations: number;
+  lastAudit?: GoalAuditSummary;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}

@@ -2,11 +2,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import {
+  DEFAULT_GOAL_MAX_CONTINUATIONS,
   DEFAULT_MAX_PARALLEL_LOOPS,
+  GOAL_MAX_CONTINUATIONS_FLAG,
   MAX_PARALLEL_LOOPS_FLAG,
+  parseGoalMaxContinuations,
   parseMaxParallelLoops,
 } from "./config.ts";
 import { formatLoopBatchResult, runAdversarialLoopBatch } from "./core.ts";
+import { registerGoalFeature } from "./goal.ts";
 
 const DEFAULT_MAX_ITERATIONS = 6;
 
@@ -101,6 +105,13 @@ export default function (pi: ExtensionAPI) {
     type: "string",
     default: String(DEFAULT_MAX_PARALLEL_LOOPS),
   });
+  pi.registerFlag(GOAL_MAX_CONTINUATIONS_FLAG, {
+    description: `Maximum automatic Goal continuations (default: ${DEFAULT_GOAL_MAX_CONTINUATIONS})`,
+    type: "string",
+    default: String(DEFAULT_GOAL_MAX_CONTINUATIONS),
+  });
+
+  let goalMaxContinuations = DEFAULT_GOAL_MAX_CONTINUATIONS;
 
   // Register the default immediately so the tool is available in startup flows
   // that inspect tools before a session starts. Re-register it after CLI flags
@@ -119,6 +130,22 @@ export default function (pi: ExtensionAPI) {
         "warning",
       );
     }
+    try {
+      goalMaxContinuations = parseGoalMaxContinuations(
+        pi.getFlag(GOAL_MAX_CONTINUATIONS_FLAG),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      goalMaxContinuations = DEFAULT_GOAL_MAX_CONTINUATIONS;
+      ctx.ui.notify(
+        `Ignoring invalid --${GOAL_MAX_CONTINUATIONS_FLAG}: ${message}; using ${DEFAULT_GOAL_MAX_CONTINUATIONS}`,
+        "warning",
+      );
+    }
     registerTool(pi, maxParallelLoops);
+  });
+
+  registerGoalFeature(pi, {
+    getMaxContinuations: () => goalMaxContinuations,
   });
 }

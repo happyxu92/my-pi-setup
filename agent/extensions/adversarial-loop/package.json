@@ -20,6 +20,7 @@
     "core.ts",
     "evaluator.ts",
     "generator.ts",
+    "goal.ts",
     "index.ts",
     "types.ts",
     "utils.ts"
