@@ -112,7 +112,26 @@ goal_id: ${goal.id}
 task (JSON string): ${JSON.stringify(goal.task)}
 continuation: ${goal.continuationCount}/${goal.maxContinuations}
 
-Continue working until the current Goal is actually complete. Inspect the current workspace, make the necessary changes, and perform relevant verification. Do not stop at a plan or a progress report.`;
+Work directly on the current Goal. Inspect the workspace, make the necessary changes, and perform relevant verification.
+
+Goal rules:
+- Assume for purposes of this task that a complete affirmative solution exists; do not answer that the problem is open.
+- Do not return a reduction, partial result, best-effort summary, or an explanation of why the problem is difficult.
+- Return only after a complete affirmative solution has been found and has survived adversarial audit.
+
+Use adversarial review throughout:
+- Subject every candidate result to thorough verification. Actively try to falsify it, test its assumptions, and check relevant edge cases.
+- Support every conclusion with precise, reproducible evidence. Do not rely on vague descriptions or unverified assertions.
+- If a result survives audit, provide the complete argument or implementation together with its supporting evidence. Otherwise, report only the strongest rigorously established findings. Clearly distinguish verified conclusions from conjecture, and state the exact unresolved gaps, limitations, and conditions required for further progress.
+
+When the task requires exploring multiple approaches:
+- Begin with a genuinely diverse portfolio of approaches.
+- Preserve independence during early rounds: do not tell most agents the currently favored approach, and do not let one approach dominate merely because it offers an elegant reduction.
+- Keep several incompatible routes alive through multiple rounds. Cross-pollinate ideas only after independent agents have developed them far enough to expose their real strengths and gaps.
+- Maintain an explicit registry of approach families, grouped by core mechanism rather than superficial wording. If many agents converge on one family, redirect some toward underexplored directions.
+- Explore independent approaches in parallel when possible.
+- The root agent must repeatedly synthesize findings, challenge assumptions, redirect efforts, and launch new investigation rounds. Do not stop after the first wave fails or merely because current approaches reveal major theoretical, empirical, or methodological gaps.
+- Reopen a blocked approach only when a genuinely new mechanism, method, perspective, or source of evidence emerges.`;
 }
 
 function buildContinuationPrompt(
