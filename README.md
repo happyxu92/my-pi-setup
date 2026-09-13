@@ -13,6 +13,7 @@ my-pi-setup/
 │   │   ├── adversarial-loop/      # Adversarial evaluator-generator task loop
 │   │   ├── codex-fast.ts          # Enables the Fast service tier for Codex subscriptions
 │   │   ├── enable-grep-find.ts    # Enables pi's built-in grep/find tools by default
+│   │   ├── pi-accounts/           # OAuth account manager with per-project defaults
 │   │   ├── pi-undo/               # Local workspace undo/redo extension
 │   │   ├── tokens-per-second.ts   # Displays the real-time token/s rate in the status bar
 │   │   └── llm-context-inspector.ts # Inspects the system prompt and active tool definitions
@@ -88,6 +89,8 @@ pi install npm:pi-web-access
 
 This repository already includes a local copy of `pi-undo`. Do not enable `pi-undo-redo` or the npm version of `@davideasden/pi-undo` at the same time, or commands such as `/undo` and `/redo` will be registered more than once.
 
+This repository also includes a local fork of `@narumitw/pi-accounts` with project-level default accounts. Do not load the npm `@narumitw/pi-accounts` or legacy `@narumitw/pi-codex-accounts` alongside it. See [pi-accounts setup and usage](agent/extensions/pi-accounts/README.md).
+
 > Verify the installation with `pi list`.
 
 ## Extensions
@@ -97,6 +100,7 @@ This repository already includes a local copy of `pi-undo`. Do not enable `pi-un
 | **adversarial-loop** | Registers the `adversarial_loop` tool. For code and non-code deliverables with strict completion criteria or high quality requirements, it uses independent evaluator and generator subprocesses to establish acceptance criteria, iteratively improve the deliverable, and verify it independently until it passes or reaches a safety limit. |
 | **codex-fast** | Injects `service_tier: "priority"` into `openai-codex` subscription requests to enable the Codex Fast service tier. Actual availability depends on the account, plan, and model permissions. |
 | **enable-grep-find** | Enables pi's built-in `grep` and `find` tools, which are disabled by default. It adds them to the active tool list automatically during the `session_start` event. |
+| **pi-accounts** | Local fork of `@narumitw/pi-accounts@0.52.0`. `/accounts` manages OAuth accounts and project defaults in `<cwd>/.pi/pi-accounts.json`; existing sessions keep their own selections. Requires Pi 0.85.1+. |
 | **pi-undo** | Based on `@davideasden/pi-undo@0.2.11`, with directory-exclusion support and a fix for logical-leaf comparison in `/tree`. Project configuration is stored in `<workspace>/.pi/pi-undo.json`. |
 | **tokens-per-second** | Displays the token generation rate (`tok/s`) for the current streaming response in the status bar. It shows `… tok/s` when streaming begins and the measured rate when streaming ends. |
 | **llm-context-inspector** | Registers the `/system-prompt` and `/tools` commands, which display the complete current system prompt and active tool definitions, respectively. |

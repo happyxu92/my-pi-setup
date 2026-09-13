@@ -1,11 +1,14 @@
 {
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.83.0",
-    "@earendil-works/pi-coding-agent": "^0.83.0",
-    "@earendil-works/pi-tui": "^0.83.0"
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@narumitw/pi-tui-kit": "^0.59.0",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/proper-lockfile": "^4.1.4",
     "prettier": "^3.9.5",
     "typescript": "^7.0.2"
   },
