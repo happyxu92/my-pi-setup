@@ -51,6 +51,8 @@ function loopResult(completed: boolean, options: RunLoopOptions) {
 
 function createHarness(options?: {
   maxContinuations?: number;
+  canAudit?: () => boolean;
+  onStop?: () => void;
   ids?: string[];
   initialEntries?: Array<Record<string, unknown>>;
   runLoop?: (options: RunLoopOptions) => Promise<ReturnType<typeof loopResult>>;
@@ -98,6 +100,8 @@ function createHarness(options?: {
 
   registerGoalFeature(pi, {
     getMaxContinuations: () => options?.maxContinuations ?? 25,
+    canAudit: options?.canAudit,
+    onStop: options?.onStop,
     createId: () => ids.shift() ?? "fallback-id",
     now: () => "2026-01-01T00:00:00.000Z",
     runLoop: async (input) => {
@@ -113,6 +117,7 @@ function createHarness(options?: {
     sessionManager: { getBranch: () => entries },
     isProjectTrusted: () => true,
     isIdle: () => idle,
+    hasPendingMessages: () => false,
     abort: () => {
       abortCount++;
     },
@@ -140,6 +145,11 @@ function createHarness(options?: {
     },
     ctx,
     emit,
+    finishRun: async (stopReason = "stop") => {
+      await emit("agent_end", agentEndEvent(stopReason));
+      idle = true;
+      await emit("agent_settled");
+    },
     entries,
     get abortCount() {
       return abortCount;
@@ -236,12 +246,15 @@ test("rejects a second active Goal and resume assigns a new id", async () => {
   assert.equal(harness.sent.length, 2);
 });
 
-test("runs an evaluator-only loop after agent_end and queues feedback", async () => {
+test("runs an evaluator-only loop only after agent_settled and queues feedback", async () => {
   const harness = createHarness();
   await harness.emit("session_start");
   await harness.command("Finish the task");
   harness.setIdle(false);
   await harness.emit("agent_end", agentEndEvent());
+  assert.equal(harness.auditOptions.length, 0);
+  harness.setIdle(true);
+  await harness.emit("agent_settled");
 
   assert.equal(harness.auditOptions.length, 1);
   assert.equal(harness.auditOptions[0].maxIterations, 0);
@@ -260,7 +273,7 @@ test("completes on evaluator acceptance and stops at the continuation limit", as
   await accepted.emit("session_start");
   await accepted.command("Accepted task");
   accepted.setIdle(false);
-  await accepted.emit("agent_end", agentEndEvent());
+  await accepted.finishRun();
   assert.equal(latestGoal(accepted.entries)?.status, "completed");
   assert.equal(accepted.sent.length, 1);
 
@@ -268,8 +281,8 @@ test("completes on evaluator acceptance and stops at the continuation limit", as
   await limited.emit("session_start");
   await limited.command("Limited task");
   limited.setIdle(false);
-  await limited.emit("agent_end", agentEndEvent());
-  await limited.emit("agent_end", agentEndEvent());
+  await limited.finishRun();
+  await limited.finishRun();
   assert.equal(latestGoal(limited.entries)?.status, "exhausted");
   assert.equal(limited.sent.length, 2);
 });
@@ -309,7 +322,7 @@ test("blocks ordinary input while auditing but allows extension follow-ups", asy
   await harness.emit("session_start");
   await harness.command("Long audit task");
   harness.setIdle(false);
-  const auditPromise = harness.emit("agent_end", agentEndEvent());
+  const auditPromise = harness.finishRun();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(latestGoal(harness.entries)?.status, "auditing");
 
@@ -332,6 +345,36 @@ test("blocks ordinary input while auditing but allows extension follow-ups", asy
   resolveAudit(loopResult(false, harness.auditOptions[0]));
   await auditPromise;
   assert.equal(latestGoal(harness.entries)?.status, "running");
+});
+
+test("defers Goal audit until background work and pending results are integrated", async () => {
+  let ready = false;
+  const harness = createHarness({ canAudit: () => ready });
+  await harness.emit("session_start");
+  await harness.command("Task with background work");
+  await harness.finishRun("toolUse");
+  assert.equal(harness.auditOptions.length, 0);
+  assert.equal(latestGoal(harness.entries)?.continuationCount, 0);
+  ready = true;
+  // Finishing the last background loop alone must not audit the workspace.
+  await harness.emit("agent_settled");
+  assert.equal(harness.auditOptions.length, 0);
+  await harness.finishRun();
+  assert.equal(harness.auditOptions.length, 1);
+});
+
+test("Goal stop also stops owned background work", async () => {
+  let stops = 0;
+  const harness = createHarness({
+    onStop: () => {
+      stops++;
+    },
+  });
+  await harness.emit("session_start");
+  await harness.command("Task");
+  await harness.command("stop");
+  assert.equal(stops, 1);
+  assert.equal(latestGoal(harness.entries)?.status, "stopped");
 });
 
 test("skips audits for aborted and errored runs and resolves them after retries settle", async () => {

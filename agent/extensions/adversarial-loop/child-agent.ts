@@ -68,6 +68,7 @@ interface RunChildAgentOptions {
   projectTrusted: boolean;
   signal?: AbortSignal;
   onActivity?: (activity: string) => void;
+  onUsage?: (usage: Usage) => void;
   outputValidation?: ChildAgentOutputValidation;
 }
 
@@ -278,7 +279,7 @@ export async function runChildAgent(options: RunChildAgentOptions) {
     "--thinking",
     options.thinkingLevel,
     "--exclude-tools",
-    "adversarial_loop",
+    "adversarial_loop,adversarial_loop_wait,adversarial_loop_manage",
     "--append-system-prompt",
     ROLE_SYSTEM_PROMPTS[options.role],
   ];
@@ -619,6 +620,7 @@ export async function runChildAgent(options: RunChildAgentOptions) {
       throw error;
     }
   } finally {
+    options.onUsage?.(structuredClone(result.usage));
     eventsLog.end();
     if (stderrFullLog) stderrFullLog.end();
     await Promise.all([eventsLogDone, stderrFullLogDone]);

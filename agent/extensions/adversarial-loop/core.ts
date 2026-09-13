@@ -123,6 +123,10 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         ),
         agentDirectory: iterationArtifacts.evaluatorDirectory,
         signal: options.signal,
+        onUsage: (childUsage) => {
+          addUsage(usage, childUsage);
+          options.onUsage?.(structuredClone(usage));
+        },
         onActivity: (activity) => update(`Evaluation ${round}: ${activity}`),
         outputValidation: {
           maxRetries: DEFAULT_EVALUATOR_OUTPUT_RETRIES,
@@ -142,7 +146,6 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
             ),
         },
       });
-      addUsage(usage, evaluator.usage);
       evaluation = parseEvaluatorOutput(evaluator.output, criteria);
       if (criteria && evaluation.criteria !== criteria) {
         await appendCriteriaRevision(
@@ -204,10 +207,13 @@ export async function runAdversarialLoop(options: RunLoopOptions) {
         }),
         agentDirectory: iterationArtifacts.generatorDirectory,
         signal: options.signal,
+        onUsage: (childUsage) => {
+          addUsage(usage, childUsage);
+          options.onUsage?.(structuredClone(usage));
+        },
         onActivity: (activity) =>
           update(`Generator ${round}/${options.maxIterations}: ${activity}`),
       });
-      addUsage(usage, generator.usage);
       generatorResult = {
         report: generator.output,
         stopReason: generator.stopReason,

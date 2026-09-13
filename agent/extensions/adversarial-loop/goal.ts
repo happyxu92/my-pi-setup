@@ -19,6 +19,9 @@ type GoalAuditRunner = (
 
 export interface GoalFeatureOptions {
   getMaxContinuations: () => number;
+  /** Background work and undelivered results must be integrated before audit. */
+  canAudit?: () => boolean;
+  onStop?: () => void;
   runLoop?: GoalAuditRunner;
   createId?: () => string;
   now?: () => string;
@@ -187,6 +190,7 @@ export function registerGoalFeature(
   const now = options.now ?? (() => new Date().toISOString());
   let goal: GoalState | undefined;
   let auditController: AbortController | undefined;
+  let pendingAudit: AgentEndEvent | undefined;
   let pendingFailedRun:
     { goalId: string; stopReason: "error" | "aborted" } | undefined;
 
@@ -217,6 +221,7 @@ export function registerGoalFeature(
   const restore = (ctx: ExtensionContext) => {
     auditController?.abort();
     auditController = undefined;
+    pendingAudit = undefined;
     pendingFailedRun = undefined;
     goal = undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
@@ -251,6 +256,12 @@ export function registerGoalFeature(
       return;
     }
     pendingFailedRun = undefined;
+    if (
+      !ctx.isIdle() ||
+      ctx.hasPendingMessages() ||
+      options.canAudit?.() === false
+    )
+      return;
     if (!ctx.model) {
       transition(ctx, {
         status: "error",
@@ -361,6 +372,7 @@ export function registerGoalFeature(
           return;
         }
         auditController?.abort();
+        options.onStop?.();
         transition(ctx, { status: "stopped" });
         if (!ctx.isIdle()) ctx.abort();
         ctx.ui.notify(`Goal ${goal?.id ?? ""} stopped.`, "info");
@@ -453,14 +465,16 @@ export function registerGoalFeature(
     },
   });
 
-  pi.on("session_start", (_event, ctx) => restore(ctx));
-  pi.on("session_tree", (_event, ctx) => restore(ctx));
-  pi.on("session_shutdown", () => {
+  const invalidate = () => {
     auditController?.abort();
     auditController = undefined;
+    pendingAudit = undefined;
     pendingFailedRun = undefined;
     goal = undefined;
-  });
+  };
+  pi.on("session_start", (_event, ctx) => restore(ctx));
+  pi.on("session_tree", (_event, ctx) => restore(ctx));
+  pi.on("session_shutdown", invalidate);
   pi.on("before_agent_start", (event) => {
     const activeGoal = goal;
     if (!isLiveGoal(activeGoal)) return;
@@ -476,8 +490,13 @@ export function registerGoalFeature(
     );
     return { action: "handled" as const };
   });
-  pi.on("agent_end", (event, ctx) => auditGoal(ctx, event));
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_end", (event) => {
+    pendingAudit = event;
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    const ended = pendingAudit;
+    pendingAudit = undefined;
+    if (ended) await auditGoal(ctx, ended);
     const failedRun = pendingFailedRun;
     pendingFailedRun = undefined;
     if (
@@ -496,4 +515,5 @@ export function registerGoalFeature(
       error: "The main agent stopped with an error after retry handling",
     });
   });
+  return { invalidate };
 }

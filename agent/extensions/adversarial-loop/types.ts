@@ -1,3 +1,4 @@
+import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 
 export type ThinkingLevel =
@@ -70,6 +71,45 @@ export interface RunLoopOptions {
   maxIterations: number;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback<AdversarialLoopDetails>;
+  /** Cumulative usage, including work performed before a child fails. */
+  onUsage?: (usage: Usage) => void;
+}
+
+export type BackgroundLoopStatus =
+  | "starting"
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "exhausted"
+  | "error"
+  | "cancelled"
+  | "interrupted";
+
+export interface BackgroundLoopRecord {
+  version: 1;
+  id: string;
+  toolCallId: string;
+  task: string;
+  cwd: string;
+  model: string;
+  thinkingLevel: ThinkingLevel;
+  maxIterations: number;
+  status: BackgroundLoopStatus;
+  phase: string;
+  createdAt: string;
+  updatedAt: string;
+  delivery: "pending" | "delivered" | "suppressed";
+  usage: Usage;
+  details?: AdversarialLoopDetails;
+  latestGeneratorReport?: string;
+  error?: string;
+}
+
+export interface LoopCapacity {
+  active: number;
+  limit: number;
+  available: number;
+  auditing: boolean;
 }
 
 export type GoalStatus =

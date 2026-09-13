@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import type { Usage } from "@earendil-works/pi-ai";
 
 import {
   createChildSessionPath,
@@ -166,6 +167,7 @@ async function runWithFakeRpc(
   process.argv[1] = fakePi;
   let result: Awaited<ReturnType<typeof runChildAgent>> | undefined;
   let error: unknown;
+  const usageUpdates: Usage[] = [];
   try {
     result = await runChildAgent({
       role: "evaluator",
@@ -176,13 +178,14 @@ async function runWithFakeRpc(
       agentDirectory,
       projectTrusted: false,
       outputValidation: validation,
+      onUsage: (usage) => usageUpdates.push(usage),
     });
   } catch (caught) {
     error = caught;
   } finally {
     process.argv[1] = originalScript;
   }
-  return { root, agentDirectory, result, error };
+  return { root, agentDirectory, result, error, usageUpdates };
 }
 
 async function readJson(path: string) {
@@ -430,6 +433,8 @@ test("RPC child corrects output in-session with UTF-8 framing and clean shutdown
     assert.equal(run.result.output, '{"ok":true,"label":"汉"}');
     assert.equal(run.result.outputRetries, 1);
     assert.equal(run.result.usage.totalTokens, 6);
+    assert.equal(run.usageUpdates.length, 1);
+    assert.equal(run.usageUpdates[0].totalTokens, 6);
     assert.deepEqual(retries, [1]);
 
     const observed = await readJson(
@@ -448,6 +453,10 @@ test("RPC child corrects output in-session with UTF-8 framing and clean shutdown
       },
     ]);
     assert.equal(observed.args[observed.args.indexOf("--mode") + 1], "rpc");
+    assert.equal(
+      observed.args[observed.args.indexOf("--exclude-tools") + 1],
+      "adversarial_loop,adversarial_loop_wait,adversarial_loop_manage",
+    );
 
     assert.equal(
       await readFile(join(run.agentDirectory, "final-response.txt"), "utf8"),
@@ -507,6 +516,8 @@ test("RPC child archives the third invalid output after default exhaustion", asy
   try {
     assert.match(String(run.error), /remained invalid after 2 retries/);
     assert.equal(run.result, undefined);
+    assert.equal(run.usageUpdates.length, 1);
+    assert.equal(run.usageUpdates[0].totalTokens, 9);
     const observed = await readJson(
       join(run.agentDirectory, "fake-rpc-observed.json"),
     );

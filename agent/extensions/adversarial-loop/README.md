@@ -23,7 +23,7 @@ Each child agent starts in RPC mode with a fresh, independent session. The `--se
 - If the parent session trusts the project, both types of child agent resolve the project's enabled extensions using only `<workspace>/.pi/settings.json` and the auto-discovered entries under `<workspace>/.pi/extensions/`. This includes already-installed npm, git, and local packages configured in the project's `packages` list, project-level `extensions` paths, package filters, and ordinary project-local extensions.
 - User/global extension configuration is ignored.
 
-The subprocess still uses `--no-extensions` to disable automatic extension discovery, then explicitly loads only the trusted project's resolved extension paths plus an internal extension that restores the base toolset. Tools registered by project extensions are available by default, except for `adversarial_loop`, which is excluded to prevent child agents from recursively starting new loops. The workflow does not install missing plugins from the network; project packages must already be installed, as they normally are during trusted project startup. Project extensions run with the current user's permissions, just like ordinary pi extensions, so only reviewed code should be trusted and loaded.
+The subprocess still uses `--no-extensions` to disable automatic extension discovery, then explicitly loads only the trusted project's resolved extension paths plus an internal extension that restores the base toolset. Tools registered by project extensions are available by default, except for `adversarial_loop`, `adversarial_loop_wait`, and `adversarial_loop_manage`, which are excluded to prevent child agents from recursively scheduling or managing loops. The workflow does not install missing plugins from the network; project packages must already be installed, as they normally are during trusted project startup. Project extensions run with the current user's permissions, just like ordinary pi extensions, so only reviewed code should be trusted and loaded.
 
 The evaluator's `edit` and `write` tools are intended only for saving its own intermediate evaluation materials; it should not modify workspace deliverables. The acceptance criteria established in the first iteration serve as a stable baseline for subsequent evaluations, but later evaluators may submit a complete replacement set through `updated_criteria` when genuinely necessary. When no update is needed, they may omit both `criteria` and `updated_criteria`. The controller writes the latest criteria to `task-spec.md`. Whenever the criteria change, it archives both the old and new sets in `criteria-revisions.jsonl`. These control files exist only as process records, and their presence and paths are not disclosed to child agents. The generator directly receives the task, current acceptance criteria, and evaluator feedback. Later evaluators receive the previous generator response as untrusted context, but must verify its claims themselves and independently evaluate the task against the criteria and current workspace.
 
@@ -34,6 +34,7 @@ Each loop creates a unique directory under `workspace/.adversarial-loop/` when i
 ```text
 .adversarial-loop/<loop-id>/
 ├── original-task.md
+├── loop-result.json         # Background task terminal result and usage
 ├── task-spec.md
 ├── criteria-revisions.jsonl  # Created only after a criteria update
 ├── evaluator-results.jsonl
@@ -53,6 +54,7 @@ Each loop creates a unique directory under `workspace/.adversarial-loop/` when i
         └── ...
 ```
 
+- `loop-result.json`: Background task ID, terminal status, final evaluation details, latest generator report, error (if any), and cumulative child usage. Written before completion is announced; Goal audits do not create this background-task file. Delivery metadata is a snapshot at completion; the current delivery state is kept in the session ledger.
 - `criteria-revisions.jsonl`: Created only when a later evaluator first returns a valid `updated_criteria`. Each subsequent update appends one line recording the iteration, the old criteria, and the complete new criteria, ensuring that older versions are not lost when `task-spec.md` is updated. The file is not created if the criteria never change.
 - `evaluator-results.jsonl`: Each line records the normalized structured result of one evaluator iteration. It also records errors when structured output still cannot be parsed after the default two in-session corrections, when the subprocess fails, or when another parsing error occurs. The `result.json` in each agent directory records the actual number of structured-output retries in `outputRetries`.
 - `generator-results.jsonl`: Each line records a generator work summary, stop reason, or error.
@@ -63,9 +65,11 @@ Each loop creates a unique directory under `workspace/.adversarial-loop/` when i
 
 ## Code Structure
 
-- `index.ts`: Tool registration, parameter schemas, and pi context adaptation.
+- `index.ts`: Three tool registrations, commands, session lifecycle, and pi context adaptation.
+- `loop-manager.ts`: Session-wide capacity, background task lifecycle, independent cancellation, result persistence, and the exclusive Goal audit slot.
+- `loop-notifier.ts`: Completion inbox delivery, deduplication, main-agent yielding/wakeup, and bounded result formatting.
 - `config.ts`: Default and CLI-configured maximum parallel loop count validation.
-- `core.ts`: Single-loop and concurrent batch orchestration, plus final result formatting.
+- `core.ts`: Single-loop execution and result formatting; the blocking batch helper remains available internally but is not used by the public tool.
 - `child-agent.ts`: Temporary pi subprocess startup, cancellation, extension selection, event handling, and usage aggregation.
 - `child-tools.ts`: Enables the child agent's base tools while preserving tools registered by project extensions.
 - `evaluator.ts`: Evaluator prompts and acceptance-output parsing and normalization.
@@ -89,7 +93,7 @@ Invoke the tool with the `loops` parameter. It supports one or more loops:
 }
 ```
 
-Multiple independent loops can run concurrently in a single tool call. The default maximum is `6` loops:
+Multiple independent loops can run concurrently, including across separate tool calls. The default **session-wide concurrent maximum** is `6` loops:
 
 ```json
 {
@@ -112,17 +116,70 @@ Parameters:
 - `loops[].task`: A complete, self-contained task description. Child agents cannot see the parent conversation history.
 - `loops[].maxIterations`: Maximum number of generator runs. Defaults to `6`; allowed range: `1-20`. A final evaluator still runs after the last generator iteration.
 
-Concurrent loops share the current workspace and may run generators at the same time. Assign each loop a non-overlapping set of directories or files. Tasks with dependencies or tasks that modify the same files should run serially in a single loop.
+The tool returns immediately with task IDs and the remaining capacity; this acknowledges submission, **not acceptance**. Completed results arrive automatically as custom messages. If the main agent is working, results are steered into its next safe model turn; if idle, a result triggers a new turn. Existing foreground tool batches are not interrupted. Nearby completions are coalesced, while ordinary child progress never triggers an LLM request.
 
-To change the maximum number of loops accepted in one tool call, start pi with the extension flag below. The value must be a positive integer:
+Concurrent loops share the current workspace and may run generators at the same time. Assign each loop a non-overlapping set of directories or files. **The main agent must also avoid modifying files owned by active loops.** Tasks with dependencies or tasks that modify the same files should run serially. This is a coordination rule, not enforced filesystem isolation.
+
+All calls reserve capacity atomically. Starting, running, and cancelling loops count against the same limit; cancellation releases a slot only after the child exits and final cleanup finishes. Insufficient capacity rejects the entire submission: no partial acceptance and no hidden queue. A failed loop does not cancel its siblings. The model, thinking level, cwd, and project trust are captured at submission.
+
+To change the session-wide concurrent limit, start pi with the extension flag below. The value must be a positive integer:
 
 ```bash
 pi --adversarial-loop-max-loops 10
 ```
 
+### Yielding and managing tasks
+
+Three LLM tools are registered:
+
+| Tool | Purpose |
+| --- | --- |
+| `adversarial_loop` | Start one or more background loops; return IDs immediately. |
+| `adversarial_loop_wait` | Yield the main agent until new results or user input arrive. |
+| `adversarial_loop_manage` | Query status, reread results, or cancel tasks. |
+
+When no useful independent work remains, call `adversarial_loop_wait` with `{}` **as the only tool call in the assistant message**. It immediately returns `terminate: true`, suppressing the ordinary post-tool LLM request without holding a tool execution open. If a result is already ready, it returns that result instead of yielding. If no tasks remain or a user message is already pending, it does not yield. Mixed tool batches and multiple waits in one message are rejected.
+
+Typical sequence:
+
+```text
+adversarial_loop → do other independent work → adversarial_loop_wait
+                ← automatic result from the first finished loop
+process result → start another loop within available capacity → wait again
+```
+
+Management examples:
+
+```json
+{ "action": "status" }
+{ "action": "result", "ids": ["<loop-id>"] }
+{ "action": "cancel", "ids": ["<loop-id>"] }
+{ "action": "cancel" }
+```
+
+`result` requires IDs. `status` and `cancel` accept optional IDs, defaulting to all tasks. Results remain readable after notification and repeated reads do not duplicate usage. Only `completed` means independent acceptance; `exhausted`, `error`, `cancelled`, and `interrupted` do not.
+
+User commands remain available while the main agent is idle:
+
+```text
+/loops status
+/loops stop <loop-id>
+/loops stop all
+```
+
+Cancelled tasks do not automatically wake the main agent. `/loops stop all` also disables automatic wakeups and aborts an active main run. A main-agent abort or terminal error pauses automatic notifications until a new user instruction; it does not itself cancel the background workers. Use `/loops stop all` to stop those workers too.
+
+### Persistence and execution modes
+
+Background work is scoped to a **persistent TUI or RPC session**, not an external daemon. Print/JSON single-shot mode explicitly rejects start/wait calls because the process could exit before the work completes. Normal main-agent settlement does not stop workers. Exit, reload, session replacement, and tree navigation cancel and clean up old workers; stale callbacks cannot notify the replacement session/branch. Unfinished restored records become `interrupted` and are never automatically restarted. Restored results remain queryable but do not unexpectedly trigger model requests.
+
+Task records are stored as `adversarial-loop-state` session entries and restored only from the current branch. Each completed task also saves `loop-result.json` in its archive. Cumulative child usage, including work preceding a child error, is retained per task. **Background usage is currently an extension ledger, not part of Pi's native footer or `/session` tool-usage totals**, because a startup tool result is finalized before that usage exists. Completion notifications and repeated reads do not charge it again.
+
+The concurrency limit applies to one session runtime, not globally across separate Pi processes. Results sent to the LLM are truncated to 48 KiB; automatic notifications carry at most six results each, with remaining results kept in the inbox.
+
 ## Goal Mode
 
-`/goal` runs the main agent toward a persistent goal and independently audits the workspace whenever that agent run ends. The goal task is carried in the system prompt; the extension sends only a short kickoff user message to start the run. If the evaluator does not accept the result, its failed checks and feedback are queued as a follow-up and the main agent continues automatically.
+`/goal` runs the main agent toward a persistent goal and independently audits the workspace only after the main agent has fully settled, all background loops have ended, and their results have been delivered for integration. Yielding with `adversarial_loop_wait` is not completion and never starts an audit. The last background result first wakes the main agent; audit waits for that agent to finish integrating it. The goal task is carried in the system prompt; the extension sends only a short kickoff user message to start the run. If the evaluator does not accept the result, its failed checks and feedback are queued as a follow-up and the main agent continues automatically.
 
 ```text
 /goal Implement the requested feature and verify it with the project tests
@@ -133,7 +190,7 @@ pi --adversarial-loop-max-loops 10
 
 Goal state is appended to the current session as `goal-state` custom entries. It is restored from the active session branch after reloads, resumes, forks, and tree navigation. A previously running goal is restored as interrupted rather than starting work unexpectedly; `/goal resume` assigns it a new unique ID and a fresh continuation budget. An active or auditing goal blocks creation of another goal.
 
-Each audit invokes an evaluator-only adversarial loop with `maxIterations: 0`; this internal mode does not run a generator and does not change the public tool's `maxIterations` range. Ordinary user input is blocked while an audit is inspecting the workspace, but `/goal status` and `/goal stop` remain available. Errors and unverified results never mark the goal complete.
+Each audit invokes an evaluator-only adversarial loop with `maxIterations: 0`; this internal mode does not run a generator and does not change the public tool's `maxIterations` range. Audits reserve an exclusive slot in the same pool and block new loop submissions while inspecting the workspace. `/goal stop` cancels background loops and prevents automatic wakeups as well as stopping the audit/main agent. Ordinary user input is blocked while an audit is inspecting the workspace, but `/goal status` and `/goal stop` remain available. Errors and unverified results never mark the goal complete.
 
 The default automatic continuation limit is 25. Configure it with a positive integer:
 
@@ -151,5 +208,5 @@ For example, tell the parent agent directly:
 
 - The evaluator and generator currently use the same model and thinking level.
 - The evaluator may use `edit` and `write` to save intermediate materials and may run `bash` for verification. Currently, a system prompt is the primary mechanism preventing it from modifying workspace deliverables; OS-level write isolation has not yet been implemented.
-- A subprocess or model error terminates the workflow and reports a tool error. Invalid evaluator structured output is retried twice by default in the same RPC session before the workflow terminates. In concurrent mode, a terminal error also cancels the other loops. If a task does not pass, the loop continues until the safety limit.
+- A subprocess or model error terminates that background task and produces an `error` result without cancelling independent siblings. Invalid evaluator structured output is retried twice by default in the same RPC session before that task terminates. If a task does not pass, it continues until the safety limit.
 - Each child agent's final report and the tool's final output have length limits to prevent the parent conversation context from growing excessively large.

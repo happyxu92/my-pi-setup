@@ -22,6 +22,8 @@
     "generator.ts",
     "goal.ts",
     "index.ts",
+    "loop-manager.ts",
+    "loop-notifier.ts",
     "types.ts",
     "utils.ts"
   ],
