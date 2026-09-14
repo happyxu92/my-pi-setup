@@ -116,7 +116,11 @@ Parameters:
 - `loops[].task`: A complete, self-contained task description. Child agents cannot see the parent conversation history.
 - `loops[].maxIterations`: Maximum number of generator runs. Defaults to `6`; allowed range: `1-20`. A final evaluator still runs after the last generator iteration.
 
-The tool returns immediately with task IDs and the remaining capacity; this acknowledges submission, **not acceptance**. Completed results arrive automatically as custom messages. If the main agent is working, results are steered into its next safe model turn; if idle, a result triggers a new turn. Existing foreground tool batches are not interrupted. Nearby completions are coalesced, while ordinary child progress never triggers an LLM request.
+The tool returns immediately with task IDs and the remaining capacity; this acknowledges submission, **not acceptance**. Call `adversarial_loop` **as the only tool call in the assistant message**, putting all new tasks in its `loops` array. Mixed tool batches, including multiple start calls in one message, are rejected before starting those loops.
+
+After a successful submission, if **more than one loop is active across the session**, the tool automatically yields the main agent with `terminate: true`, skipping the ordinary post-tool LLM request. Completed results are buffered until **at most one active loop remains**, then delivered together to wake the main agent. The count includes starting, running, and cancelling loops; cancellation reduces it only after cleanup. It is not the submitted array length or the iteration count. Pending messages prevent automatic yielding, and new user input resumes the agent early. With at most one active loop at submission, the main agent simply continues without an extra wakeup request.
+
+Outside manual or automatic waiting, completed results arrive automatically as custom messages: if the main agent is working, results are steered into its next safe model turn; if idle, a result triggers a new turn. Nearby completions are coalesced, while ordinary child progress never triggers an LLM request. After the agent wakes, starting additional loops automatically yields again if the session-wide active count exceeds one.
 
 Concurrent loops share the current workspace and may run generators at the same time. Assign each loop a non-overlapping set of directories or files. **The main agent must also avoid modifying files owned by active loops.** Tasks with dependencies or tasks that modify the same files should run serially. This is a coordination rule, not enforced filesystem isolation.
 
@@ -134,18 +138,25 @@ Three LLM tools are registered:
 
 | Tool | Purpose |
 | --- | --- |
-| `adversarial_loop` | Start one or more background loops; return IDs immediately. |
-| `adversarial_loop_wait` | Yield the main agent until new results or user input arrive. |
+| `adversarial_loop` | Start background loops; return IDs immediately and automatically yield if more than one is active. Call alone. |
+| `adversarial_loop_wait` | Yield until loops drain to at most one; if only one remains, wait for its exit. User input can resume work earlier. |
 | `adversarial_loop_manage` | Query status, reread results, or cancel tasks. |
 
-When no useful independent work remains, call `adversarial_loop_wait` with `{}` **as the only tool call in the assistant message**. It immediately returns `terminate: true`, suppressing the ordinary post-tool LLM request without holding a tool execution open. If a result is already ready, it returns that result instead of yielding. If no tasks remain or a user message is already pending, it does not yield. Mixed tool batches and multiple waits in one message are rejected.
+Manual and automatic waiting share the same wakeup policy: buffer results until a loop exits and **at most one active loop remains**. Their entry conditions differ: startup automatically yields only above one active loop, while manual waiting can also wait for the last loop to exit (`1 → 0`). Existing counts or ordinary progress never immediately wake a newly entered wait.
+
+When no useful independent work remains, call `adversarial_loop_wait` with `{}` **as the only tool call in the assistant message**. If it waits, it immediately returns `terminate: true`, suppressing the ordinary post-tool LLM request without holding a tool execution open. Already-ready results are returned immediately only when at most one loop is active; above that threshold they remain buffered. If no tasks remain or another message is already pending, it does not yield. User input can also resume either kind of wait early. Mixed tool batches and multiple waits in one message are rejected.
 
 Typical sequence:
 
 ```text
-adversarial_loop → do other independent work → adversarial_loop_wait
-                ← automatic result from the first finished loop
-process result → start another loop within available capacity → wait again
+adversarial_loop (3 tasks) → automatically wait
+3 → 2 active             → buffer the first result; keep waiting
+2 → 1 active             → wake with buffered results
+integrate → start another loop → 2 active → automatically wait again
+
+adversarial_loop (1 active total) → continue independent work
+no independent work remains     → adversarial_loop_wait alone
+next result                     → wake and integrate
 ```
 
 Management examples:
@@ -167,7 +178,7 @@ User commands remain available while the main agent is idle:
 /loops stop all
 ```
 
-Cancelled tasks do not automatically wake the main agent. `/loops stop all` also disables automatic wakeups and aborts an active main run. A main-agent abort or terminal error pauses automatic notifications until a new user instruction; it does not itself cancel the background workers. Use `/loops stop all` to stop those workers too.
+Cancelled task results are suppressed. However, an individual cancellation that reduces the active count to at most one ends either kind of wait, even if there are no pending results to deliver. A manual wait entered with just one loop waits for that loop's cleanup to finish (`1 → 0`). Outside waiting, cancellation alone does not wake the main agent. `/loops stop all` disables automatic wakeups and aborts an active main run. A main-agent abort or terminal error pauses automatic notifications until a new user instruction; it does not itself cancel the background workers. Use `/loops stop all` to stop those workers too.
 
 ### Persistence and execution modes
 
@@ -179,7 +190,7 @@ The concurrency limit applies to one session runtime, not globally across separa
 
 ## Goal Mode
 
-`/goal` runs the main agent toward a persistent goal and independently audits the workspace only after the main agent has fully settled, all background loops have ended, and their results have been delivered for integration. Yielding with `adversarial_loop_wait` is not completion and never starts an audit. The last background result first wakes the main agent; audit waits for that agent to finish integrating it. The goal task is carried in the system prompt; the extension sends only a short kickoff user message to start the run. If the evaluator does not accept the result, its failed checks and feedback are queued as a follow-up and the main agent continues automatically.
+`/goal` runs the main agent toward a persistent goal and independently audits the workspace only after the main agent has fully settled, all background loops have ended, and their results have been delivered for integration. Neither automatic yielding after startup nor yielding with `adversarial_loop_wait` is completion; neither starts an audit. The last background result first wakes the main agent; audit waits for that agent to finish integrating it. The goal task is carried in the system prompt; the extension sends only a short kickoff user message to start the run. If the evaluator does not accept the result, its failed checks and feedback are queued as a follow-up and the main agent continues automatically.
 
 ```text
 /goal Implement the requested feature and verify it with the project tests

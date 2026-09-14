@@ -59,7 +59,11 @@ function createParameters(maxParallelLoops: number) {
   });
 }
 
-function requireStandaloneWait(toolCallId: string, ctx: ExtensionContext) {
+function requireStandaloneCall(
+  toolName: "adversarial_loop" | "adversarial_loop_wait",
+  toolCallId: string,
+  ctx: ExtensionContext,
+) {
   const assistant = ctx.sessionManager
     .getBranch()
     .filter(
@@ -73,10 +77,10 @@ function requireStandaloneWait(toolCallId: string, ctx: ExtensionContext) {
   if (
     calls.length !== 1 ||
     calls[0].id !== toolCallId ||
-    calls[0].name !== "adversarial_loop_wait"
+    calls[0].name !== toolName
   ) {
     throw new Error(
-      "adversarial_loop_wait must be the only tool call in its assistant message. Do not batch it with other tools or another wait.",
+      `${toolName} must be the only tool call in its assistant message. Do not batch it with other tools or another call; put multiple loop tasks in one loops array.`,
     );
   }
 }
@@ -139,22 +143,23 @@ export default function (
       name: "adversarial_loop",
       label: "Adversarial Loop",
       description:
-        "Start background evaluator-generator delivery loops with fresh isolated pi agents. Returns task IDs immediately, NOT final acceptance. Loops independently establish acceptance criteria, improve deliverables, and verify them until acceptance or the safety limit. All calls share the session concurrency limit. An individual failure does not stop other loops. Completion results arrive automatically. Output is truncated; archives retain full results.",
+        "Start background evaluator-generator delivery loops with fresh isolated pi agents. Returns task IDs immediately, NOT final acceptance. Loops independently establish acceptance criteria, improve deliverables, and verify them until acceptance or the safety limit. All calls share the session concurrency limit. An individual failure does not stop other loops. Must be the ONLY tool call in its assistant message. Completion results arrive automatically. Output exceeding 48 KiB is truncated; archives retain full results.",
       promptSnippet:
-        "Start background delivery and independent review loops; return immediately",
+        "Start background delivery and independent review loops; call alone",
       promptGuidelines: [
         "Use adversarial_loop when explicitly requested, for strict completion criteria, or for substantial workspace deliverables needing unusually high quality; it supports code, documents, specifications, reports, analyses and configuration, not casual questions or trivial edits.",
         "Pass adversarial_loop a loops array of complete self-contained tasks because child agents cannot see the parent conversation. Both concurrent loops and the main agent must avoid modifying each other's active workspace scopes.",
         "adversarial_loop only acknowledges submission; never claim acceptance until a completed result arrives. Capacity is session-wide across all calls.",
-        "After adversarial_loop starts, do other independent work. When nothing useful remains, call adversarial_loop_wait alone instead of polling status or emitting waiting commentary. A finished loop automatically sends its result and makes capacity available for another loop.",
+        "Call adversarial_loop alone, with all new tasks in one loops array. Results arrive automatically. Continue independent work, or call adversarial_loop_wait alone when nothing useful remains. Never poll status or emit waiting commentary.",
       ],
       parameters: createParameters(maxParallelLoops),
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         requireBackgroundMode(ctx);
         signal?.throwIfAborted();
+        requireStandaloneCall("adversarial_loop", toolCallId, ctx);
         if (!ctx.model)
           throw new Error("No active model is available for child agents");
-        const { manager } = requireRuntime(ctx);
+        const { manager, notifier } = requireRuntime(ctx);
         const records = manager.start(
           params.loops.map((loop) => ({
             task: loop.task,
@@ -168,18 +173,21 @@ export default function (
           },
           toolCallId,
         );
+        const result = notifier.waitAfterStart();
+        showStatus();
         const capacity = manager.capacity();
         return {
           content: [
             {
               type: "text",
               text: truncateUtf8(
-                `Started background loops: ${records.map((record) => record.id).join(", ")}.\n${formatCapacity(capacity)}\nSubmission is not acceptance. Continue independent work, or call adversarial_loop_wait alone. Results will arrive automatically.`,
+                `Started background loops: ${records.map((record) => record.id).join(", ")}.\n${formatCapacity(capacity)}\nSubmission is not acceptance. ${result.waiting ? "Main agent yielded. Results will arrive automatically." : "Continue independent work, or call adversarial_loop_wait alone. Results will arrive automatically."}`,
                 48 * 1024,
               ),
             },
           ],
-          details: { loops: records.map(summarizeLoop), capacity },
+          details: { ...result, loops: records.map(summarizeLoop), capacity },
+          terminate: result.waiting,
         };
       },
     });
@@ -189,8 +197,8 @@ export default function (
     name: "adversarial_loop_wait",
     label: "Wait for Adversarial Loops",
     description:
-      "Yield the main agent without blocking a tool or polling. Background loops keep running; a new result automatically wakes the agent. Must be the ONLY tool call in the assistant message.",
-    promptSnippet: "Yield until background loops produce a result; call alone",
+      "Yield the main agent while background loops run. Results or user input resume work automatically. Must be the ONLY tool call in the assistant message.",
+    promptSnippet: "Yield while background loops run; call alone",
     promptGuidelines: [
       "Call adversarial_loop_wait alone when background loops are running and no useful independent work remains. Never combine adversarial_loop_wait with another tool call, including another wait.",
     ],
@@ -198,7 +206,7 @@ export default function (
     async execute(toolCallId, _params, signal, _onUpdate, ctx) {
       requireBackgroundMode(ctx);
       signal?.throwIfAborted();
-      requireStandaloneWait(toolCallId, ctx);
+      requireStandaloneCall("adversarial_loop_wait", toolCallId, ctx);
       const { manager, notifier } = requireRuntime(ctx);
       const result = notifier.wait();
       showStatus();
@@ -215,7 +223,7 @@ export default function (
           text = `Not waiting: another message is pending.\n${formatCapacity(capacity)}`;
           break;
         case "waiting_for_results":
-          text = `Main agent yielded. Background loops continue; a new result or user message will resume work.\n${formatCapacity(capacity)}`;
+          text = `Main agent yielded. Background loops continue; results or user input will resume work.\n${formatCapacity(capacity)}`;
           break;
       }
       return {
@@ -235,7 +243,7 @@ export default function (
     name: "adversarial_loop_manage",
     label: "Manage Adversarial Loops",
     description:
-      "Inspect background loop status/capacity, reread results by ID, or cancel loops. Results are retained and reads are repeatable. Cancellation reserves capacity until the child actually exits. Cancelled tasks do not automatically wake the main agent. Output is limited to 48 KiB; full results and usage are retained in the archive/session ledger.",
+      "Inspect background loop status/capacity, reread results by ID, or cancel loops. Results are retained and reads are repeatable. Cancellation reserves capacity until the child actually exits. Cancelled results are suppressed. Output is limited to 48 KiB; full results and usage are retained in the archive/session ledger.",
     promptSnippet: "Inspect, retrieve, or cancel background loops",
     parameters: Type.Object({
       action: StringEnum(["status", "result", "cancel"] as const),

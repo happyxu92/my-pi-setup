@@ -97,6 +97,249 @@ function harness(limit = 3) {
   };
 }
 
+for (const waiting of [false, true])
+  for (const hasResults of [false, true])
+    for (const remaining of [0, 1])
+      test(`notification wording: waiting=${waiting}, results=${hasResults}, active=${remaining}`, async () => {
+        const h = harness();
+        const [first] = h.start(remaining + 1);
+        h.notifier.announceStart("start");
+        await tick();
+        if (waiting) {
+          assert.equal(h.notifier.wait().waiting, true);
+          h.notifier.settled(false);
+        }
+        if (!hasResults) h.manager.cancel([first.id]);
+        h.completions[0]();
+        await notifyTick();
+        if (!waiting && !hasResults) {
+          assert.equal(h.sent.length, 0);
+        } else {
+          assert.equal(h.sent.length, 1);
+          const text = String(h.sent[0].message.content);
+          const prefix = waiting ? "Loop wait ended. " : "";
+          const status = hasResults
+            ? remaining
+              ? "Some background loop results are ready. Other loops are still active; their results will be delivered automatically."
+              : "No active background loops remain. Available results are below."
+            : remaining
+              ? "No new results to deliver. Background loops are still active; their results will be delivered automatically."
+              : "No new results to deliver. No active background loops remain.";
+          assert.ok(text.startsWith(prefix + status), text);
+          assert.ok(text.includes(`Loop capacity: ${remaining}/3 active`));
+          assert.match(
+            text,
+            /Integrate available results, continue independent work/,
+          );
+          assert.match(
+            text,
+            /Call adversarial_loop_wait alone if no independent work remains/,
+          );
+          if (remaining)
+            assert.doesNotMatch(text, /No active background loops remain/);
+          else
+            assert.doesNotMatch(
+              text,
+              /still active|will be delivered automatically/,
+            );
+          if (!hasResults)
+            assert.doesNotMatch(
+              text,
+              /results are ready|Available results are below/,
+            );
+          assert.deepEqual(
+            (h.sent[0].message.details as { loopIds: string[] }).loopIds,
+            hasResults ? [first.id] : [],
+          );
+          assert.deepEqual(h.sent[0].options, {
+            deliverAs: "steer",
+            triggerTurn: true,
+          });
+        }
+        h.notifier.dispose();
+      });
+
+for (const entry of ["wait", "waitAfterStart"] as const)
+  test(`${entry} buffers results above the threshold and wakes only once at one active loop`, async () => {
+    const h = harness();
+    h.start(3);
+    h.notifier.announceStart("start");
+    assert.equal(h.notifier[entry]().waiting, true);
+    h.notifier.settled(false);
+    await tick();
+    h.completions[0]();
+    await notifyTick();
+    assert.equal(h.manager.capacity().active, 2);
+    assert.equal(h.manager.pending().length, 1);
+    assert.equal(h.sent.length, 0);
+    h.completions[1]();
+    await notifyTick();
+    assert.equal(h.sent.length, 1);
+    assert.match(String(h.sent[0].message.content), /Loop wait ended/);
+    assert.equal(
+      (h.sent[0].message.details as { loopIds: string[] }).loopIds.length,
+      2,
+    );
+    h.notifier.context(h.messages());
+    h.notifier.settled(false);
+    await notifyTick();
+    assert.equal(h.sent.length, 1);
+    assert.equal(h.manager.pending().length, 0);
+    h.completions[2]();
+    await notifyTick();
+    assert.equal(
+      h.sent.length,
+      2,
+      "the last result uses normal delivery after waking",
+    );
+    h.notifier.dispose();
+  });
+
+for (const entry of ["wait", "waitAfterStart"] as const)
+  test(`${entry} does not consume already-ready results above the threshold`, async () => {
+    const h = harness();
+    h.start(3);
+    h.notifier.announceStart("start");
+    await tick();
+    h.completions[0]();
+    await tick();
+    const outcome = h.notifier[entry]();
+    assert.equal(outcome.waiting, true);
+    if ("records" in outcome) assert.deepEqual(outcome.records, []);
+    h.notifier.settled(false);
+    await notifyTick();
+    assert.equal(
+      h.sent.length,
+      0,
+      "an existing coalescing timer must also obey the threshold",
+    );
+    assert.equal(h.manager.pending().length, 1);
+    h.notifier.dispose();
+  });
+
+test("all loops completing during startup finalization wake only after settlement", async () => {
+  const h = harness();
+  h.start(3);
+  h.notifier.waitAfterStart();
+  await tick();
+  h.completions.forEach((finish) => finish());
+  await notifyTick();
+  assert.equal(h.sent.length, 0);
+  h.notifier.announceStart("start");
+  await notifyTick();
+  assert.equal(h.sent.length, 0);
+  h.notifier.agentEnd();
+  h.notifier.settled(false);
+  await notifyTick();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.manager.capacity().active, 0);
+  assert.equal(h.notifier.blocksAudit, true);
+  h.notifier.context(h.messages());
+  assert.equal(h.notifier.blocksAudit, false);
+  h.notifier.dispose();
+});
+
+test("automatic wait skips a single loop and pending messages", async () => {
+  const h = harness();
+  assert.equal(h.notifier.waitAfterStart().reason, "at_most_one_active_loop");
+  h.start();
+  assert.equal(h.notifier.waitAfterStart().waiting, false);
+  h.start();
+  h.pendingMessages(true);
+  assert.deepEqual(h.notifier.waitAfterStart(), {
+    waiting: false,
+    reason: "pending_messages",
+  });
+  assert.equal(h.notifier.waiting, false);
+  h.notifier.dispose();
+});
+
+for (const entry of ["wait", "waitAfterStart"] as const)
+  test(`${entry}: cancellation releases capacity only after cleanup and can wake with an empty inbox`, async () => {
+    const h = harness();
+    const records = h.start(2);
+    h.notifier.announceStart("start");
+    h.notifier[entry]();
+    h.notifier.settled(false);
+    await tick();
+    h.manager.cancel([records[0].id]);
+    h.notifier.cancelNotification();
+    await notifyTick();
+    assert.equal(h.manager.capacity().active, 2);
+    assert.equal(h.sent.length, 0);
+    h.failSend(true);
+    h.completions[0]();
+    await notifyTick();
+    assert.equal(h.sent.length, 0);
+    assert.equal(h.manager.pending().length, 0);
+    assert.equal(h.notifier.waiting, true);
+    h.failSend(false);
+    h.notifier.settled(false);
+    await notifyTick();
+    assert.equal(h.sent.length, 1);
+    assert.match(String(h.sent[0].message.content), /Loop wait ended/);
+    assert.deepEqual(
+      (h.sent[0].message.details as { loopIds: string[] }).loopIds,
+      [],
+    );
+    // An unconsumed empty-inbox wakeup must be retryable, too.
+    h.notifier.settled(false);
+    await notifyTick();
+    assert.equal(h.sent.length, 2);
+    assert.equal(h.notifier.context(h.messages()).length, 1);
+    h.notifier.settled(false);
+    await notifyTick();
+    assert.equal(h.sent.length, 2);
+    h.notifier.dispose();
+  });
+
+for (const resume of ["user", "manual"] as const) {
+  test(`${resume} input resumes work; a subsequent manual wait restores the threshold`, async () => {
+    const h = harness();
+    h.start(3);
+    h.notifier.announceStart("start");
+    h.notifier.waitAfterStart();
+    h.notifier.settled(false);
+    h.notifier.userInput();
+    if (resume === "manual") {
+      assert.equal(h.notifier.wait().waiting, true);
+      h.notifier.settled(false);
+    }
+    await tick();
+    h.completions[0]();
+    await notifyTick();
+    assert.equal(h.manager.capacity().active, 2);
+    if (resume === "manual") {
+      assert.equal(h.sent.length, 0);
+      h.completions[1]();
+      await notifyTick();
+      assert.equal(h.sent.length, 1);
+      assert.match(String(h.sent[0].message.content), /Loop wait ended/);
+    } else {
+      assert.equal(h.sent.length, 1);
+      assert.doesNotMatch(String(h.sent[0].message.content), /Loop wait ended/);
+    }
+    h.notifier.dispose();
+  });
+}
+
+for (const stop of ["stop", "failure", "dispose"] as const) {
+  test(`${stop} prevents automatic threshold wakeups`, async () => {
+    const h = harness();
+    h.start(2);
+    h.notifier.announceStart("start");
+    h.notifier.waitAfterStart();
+    h.notifier.settled(false);
+    if (stop === "failure") h.notifier.settled(true);
+    else h.notifier[stop]();
+    await tick();
+    h.completions.forEach((finish) => finish());
+    await notifyTick();
+    assert.equal(h.sent.length, 0);
+    h.notifier.dispose();
+  });
+}
+
 test("first result is steered without waiting for other loops and is acknowledged only in model context", async () => {
   const h = harness();
   h.start(2);
@@ -133,6 +376,41 @@ test("very fast completion cannot overtake the startup tool result", async () =>
   h.notifier.dispose();
 });
 
+for (const cancelled of [false, true])
+  test(`manual wait holds the last loop until ${cancelled ? "cancellation cleanup" : "completion"}`, async () => {
+    const h = harness();
+    const [record] = h.start();
+    h.notifier.announceStart("start");
+    await tick();
+    assert.equal(h.notifier.wait().waiting, true);
+    h.notifier.settled(false);
+    h.notifier.schedule();
+    h.notifier.resumeDelivery();
+    await notifyTick();
+    assert.equal(
+      h.sent.length,
+      0,
+      "lifecycle/progress must not wake at the existing count",
+    );
+    if (cancelled) {
+      h.manager.cancel([record.id]);
+      h.notifier.cancelNotification();
+      await notifyTick();
+      assert.equal(h.sent.length, 0, "cancellation must await cleanup");
+    }
+    h.completions[0]();
+    await notifyTick();
+    assert.equal(h.sent.length, 1);
+    assert.equal(h.manager.capacity().active, 0);
+    assert.equal(h.notifier.blocksAudit, true);
+    h.notifier.context(h.messages());
+    h.notifier.settled(false);
+    await notifyTick();
+    assert.equal(h.sent.length, 1);
+    assert.equal(h.notifier.blocksAudit, false);
+    h.notifier.dispose();
+  });
+
 test("wait parks synchronously and a completion during tool finalization wakes only after settlement", async () => {
   const h = harness();
   h.start();
@@ -157,22 +435,23 @@ test("wait parks synchronously and a completion during tool finalization wakes o
   h.notifier.dispose();
 });
 
-test("wait immediately returns already-ready results and deduplicates an earlier queued notification", async () => {
-  const h = harness();
-  h.start();
-  h.notifier.announceStart("start");
-  await tick();
-  h.completions[0]();
-  await notifyTick();
-  assert.equal(h.sent.length, 1);
-  const outcome = h.notifier.wait();
-  assert.equal(outcome.waiting, false);
-  assert.equal(outcome.reason, "results_ready");
-  assert.equal(outcome.records.length, 1);
-  assert.equal(h.manager.pending().length, 0);
-  assert.deepEqual(h.notifier.context(h.messages()), []);
-  h.notifier.dispose();
-});
+for (const initialCount of [1, 2])
+  test(`wait immediately returns ready results with ${initialCount - 1} active loops and deduplicates an earlier notification`, async () => {
+    const h = harness();
+    h.start(initialCount);
+    h.notifier.announceStart("start");
+    await tick();
+    h.completions[0]();
+    await notifyTick();
+    assert.equal(h.sent.length, 1);
+    const outcome = h.notifier.wait();
+    assert.equal(outcome.waiting, false);
+    assert.equal(outcome.reason, "results_ready");
+    assert.equal(outcome.records.length, 1);
+    assert.equal(h.manager.pending().length, 0);
+    assert.deepEqual(h.notifier.context(h.messages()), []);
+    h.notifier.dispose();
+  });
 
 test("wait distinguishes no active loops from pending user input", async () => {
   const h = harness();
@@ -226,6 +505,8 @@ test("a large completion backlog is delivered in bounded batches without losing 
   const h = harness(8);
   h.start(8);
   h.notifier.announceStart("start");
+  h.notifier.waitAfterStart();
+  h.notifier.settled(false);
   await tick();
   h.completions.forEach((complete) => complete());
   await notifyTick();

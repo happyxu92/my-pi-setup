@@ -21,7 +21,7 @@ import type { RunLoopOptions } from "./types.ts";
 import { emptyUsage } from "./utils.ts";
 
 test(
-  "real Pi runtime yields on wait, wakes on first completion, and replenishes its background pool",
+  "real Pi runtime shares the wait threshold after user reentry and waits for the last loop",
   { timeout: 15000 },
   async () => {
     const root = await mkdtemp(join(tmpdir(), "adversarial-loop-runtime-"));
@@ -106,9 +106,9 @@ test(
         content = [
           {
             type: "toolCall",
-            id: "start-ab",
+            id: "start-abc",
             name: "adversarial_loop",
-            arguments: { loops: [{ task: "A" }, { task: "B" }] },
+            arguments: { loops: [{ task: "A" }, { task: "B" }, { task: "C" }] },
           },
         ];
       else if (requests === 2 || requests === 4)
@@ -124,9 +124,9 @@ test(
         content = [
           {
             type: "toolCall",
-            id: "start-c",
+            id: "start-d",
             name: "adversarial_loop",
-            arguments: { loops: [{ task: "C" }] },
+            arguments: { loops: [{ task: "D" }] },
           },
         ];
       else content = [{ type: "text", text: "All results integrated." }];
@@ -168,23 +168,60 @@ test(
       assert.deepEqual(errors, []);
       assert.equal(
         requests,
-        2,
-        "wait must suppress the ordinary post-tool LLM request",
+        1,
+        "start must suppress the ordinary post-tool LLM request without an explicit wait",
       );
-      assert.equal(children.length, 2);
-      assert.equal(session.isIdle, true);
-      const firstWake = nextSettlement();
-      children[0].finish();
-      await firstWake;
-      assert.equal(requests, 4);
       assert.equal(children.length, 3);
-      assert.equal(children[1].options.signal?.aborted, false);
-      assert.match(contexts[2], /Background loop results are ready/);
-      const lastWake = nextSettlement();
+      assert.equal(session.isIdle, true);
+      await session.prompt(
+        "No independent work remains; manually wait for the loops.",
+      );
+      assert.equal(
+        requests,
+        2,
+        "user input resumes the agent, which manually yields",
+      );
+      children[0].finish();
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      assert.equal(
+        requests,
+        2,
+        "manual wait: 3 → 2 must not wake the main agent",
+      );
+      const firstWake = nextSettlement();
       children[1].finish();
+      await firstWake;
+      assert.equal(requests, 3, "replenishment must automatically yield again");
+      assert.equal(children.length, 4);
+      assert.equal(children[2].options.signal?.aborted, false);
+      assert.match(contexts[2], /Loop wait ended/);
+      assert.match(contexts[2], /Some background loop results are ready/);
+      assert.match(
+        contexts[2],
+        /Other loops are still active; their results will be delivered automatically/,
+      );
+      const manualWait = nextSettlement();
       children[2].finish();
+      await manualWait;
+      assert.equal(
+        requests,
+        4,
+        "manual wait must suppress the post-tool request",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      assert.equal(
+        requests,
+        4,
+        "manual wait at one loop must not immediately wake",
+      );
+      const lastWake = nextSettlement();
+      children[3].finish();
       await lastWake;
       assert.equal(requests, 5);
+      assert.match(
+        contexts[4],
+        /No active background loops remain\. Available results are below\./,
+      );
       assert.deepEqual(errors, []);
       assert.equal(
         session.messages.filter(

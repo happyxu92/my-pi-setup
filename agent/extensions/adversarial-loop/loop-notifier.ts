@@ -75,6 +75,9 @@ export class LoopNotifier {
   private timer?: ReturnType<typeof setTimeout>;
   private inFlight?: Notification;
   private phase: "working" | "parking" | "waiting" = "working";
+  // Retained until a model context consumes the wakeup, including empty-inbox
+  // wakeups after cancellation, so failed/lost sends can retry at settlement.
+  private wakeAtActiveCount?: 0 | 1;
   private ending = false;
   private paused = false;
   private deliverySuspended = false;
@@ -97,6 +100,7 @@ export class LoopNotifier {
   get blocksAudit() {
     return (
       this.waiting ||
+      this.wakeAtActiveCount !== undefined ||
       this.paused ||
       this.deliverySuspended ||
       this.manager.capacity().active > 0 ||
@@ -120,12 +124,18 @@ export class LoopNotifier {
     )
       return;
     if (
+      this.wakeAtActiveCount !== undefined &&
+      this.manager.capacity().active > this.wakeAtActiveCount
+    )
+      return;
+    if (
+      this.wakeAtActiveCount === undefined &&
       !this.manager
         .pending()
         .some((record) => this.announcedStarts.has(record.toolCallId))
     )
       return;
-    // Coalesce simultaneous completions without waiting for unrelated jobs.
+    // Coalesce completions once the current wait policy allows delivery.
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.flush();
@@ -142,25 +152,34 @@ export class LoopNotifier {
       this.deliverySuspended ||
       this.inFlight ||
       this.ending ||
-      this.phase === "parking"
+      this.phase === "parking" ||
+      (this.wakeAtActiveCount !== undefined &&
+        this.manager.capacity().active > this.wakeAtActiveCount)
     )
       return;
     const records = this.manager
       .pending()
       .filter((record) => this.announcedStarts.has(record.toolCallId))
       .slice(0, MAX_RESULTS_PER_NOTIFICATION);
-    if (!records.length) return;
+    if (!records.length && this.wakeAtActiveCount === undefined) return;
+    const capacity = this.manager.capacity();
+    const resultStatus = records.length
+      ? capacity.active
+        ? "Some background loop results are ready. Other loops are still active; their results will be delivered automatically."
+        : "No active background loops remain. Available results are below."
+      : `No new results to deliver. ${capacity.active ? "Background loops are still active; their results will be delivered automatically." : "No active background loops remain."}`;
     const notification = {
       notificationId: randomUUID(),
       loopIds: records.map((record) => record.id),
     };
     this.inFlight = notification;
+    const previousPhase = this.phase;
     this.phase = "working";
     try {
       this.pi.sendMessage(
         {
           customType: LOOP_COMPLETION_MESSAGE,
-          content: `Background loop results are ready. Process these results and continue independent work, start additional loops within capacity, or call adversarial_loop_wait alone when there is nothing else to do.\n\n${formatBackgroundResults(records, this.manager.capacity())}`,
+          content: `${this.wakeAtActiveCount !== undefined ? "Loop wait ended. " : ""}${resultStatus} Integrate available results, continue independent work, or start additional loops within capacity. Call adversarial_loop_wait alone if no independent work remains.\n\n${formatBackgroundResults(records, capacity)}`,
           display: true,
           details: notification,
         },
@@ -168,6 +187,7 @@ export class LoopNotifier {
       );
     } catch (error) {
       this.inFlight = undefined;
+      this.phase = previousPhase;
       // No retry timer: a user action or the next lifecycle boundary can retry.
       ctx.ui.notify(
         `Loop notification failed; results remain available: ${String(error)}`,
@@ -176,15 +196,35 @@ export class LoopNotifier {
     }
   }
 
+  private park(active: number) {
+    // Both entry points use the same wake policy. A wait entered with one loop
+    // must observe its exit (1 → 0), not wake immediately on the existing count.
+    this.wakeAtActiveCount = active > 1 ? 1 : 0;
+    this.phase = "parking";
+    this.paused = false;
+  }
+
+  waitAfterStart() {
+    const active = this.manager.capacity().active;
+    if (active <= 1)
+      return { waiting: false, reason: "at_most_one_active_loop" as const };
+    if (this.getContext()?.hasPendingMessages())
+      return { waiting: false, reason: "pending_messages" as const };
+    // No await may separate the check from parking.
+    this.park(active);
+    return { waiting: true, reason: "waiting_for_capacity" as const };
+  }
+
   wait() {
+    const active = this.manager.records().filter(isActiveLoop).length;
     const records = this.manager
       .pending()
       .slice(0, MAX_RESULTS_PER_NOTIFICATION);
-    if (records.length) {
+    if (active <= 1 && records.length) {
       this.consume(records.map((record) => record.id));
       return { waiting: false, records, reason: "results_ready" as const };
     }
-    if (!this.manager.records().some(isActiveLoop)) {
+    if (!active) {
       return {
         waiting: false,
         records: [],
@@ -198,9 +238,9 @@ export class LoopNotifier {
         reason: "pending_messages" as const,
       };
     }
-    // There is deliberately no await between inspecting the inbox and parking.
-    this.phase = "parking";
-    this.paused = false;
+    // Ready results above the threshold remain buffered. There is deliberately
+    // no await between inspecting the inbox and parking.
+    this.park(active);
     return {
       waiting: true,
       records: [],
@@ -209,6 +249,7 @@ export class LoopNotifier {
   }
 
   consume(ids: string[]) {
+    this.wakeAtActiveCount = undefined;
     this.revokeFlight();
     this.manager.acknowledge(ids);
     this.phase = "working";
@@ -227,6 +268,7 @@ export class LoopNotifier {
 
   /** Called before each actual LLM request; queued is not the same as consumed. */
   context(messages: ContextEvent["messages"]) {
+    this.wakeAtActiveCount = undefined;
     this.phase = "working";
     this.ending = false;
     const seen = new Set<string>();
@@ -283,12 +325,14 @@ export class LoopNotifier {
   }
 
   userInput() {
+    this.wakeAtActiveCount = undefined;
     this.paused = false;
     this.phase = "working";
     this.schedule();
   }
 
   stop() {
+    this.wakeAtActiveCount = undefined;
     this.paused = true;
     this.phase = "working";
     this.revokeFlight();
