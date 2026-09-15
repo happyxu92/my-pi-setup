@@ -174,6 +174,13 @@ function latestGoal(entries: Array<Record<string, unknown>>) {
   return undefined;
 }
 
+function promptEntries(entries: Array<Record<string, unknown>>) {
+  return entries.filter(
+    (entry) =>
+      entry.type === "custom" && entry.customType === "goal-system-prompt",
+  );
+}
+
 function agentEndEvent(stopReason = "stop") {
   return {
     type: "agent_end",
@@ -222,6 +229,158 @@ test("creates and persists a Goal, sends only a kickoff, and injects its task", 
     (afterCompaction as { systemPrompt: string }).systemPrompt,
     /Implement the feature/,
   );
+});
+
+test("records full Goal prompts only when the latest snapshot differs", async () => {
+  const harness = createHarness();
+  await harness.emit("session_start");
+  await harness.command("Task");
+  assert.equal(promptEntries(harness.entries).length, 0);
+
+  const [first] = await harness.emit("before_agent_start", {
+    systemPrompt: "base",
+  });
+  const firstSnapshot = promptEntries(harness.entries)[0];
+  assert.deepEqual(firstSnapshot.data, {
+    version: 1,
+    goalId: "goal-1",
+    continuationCount: 0,
+    systemPrompt: (first as { systemPrompt: string }).systemPrompt,
+  });
+  const [repeated] = await harness.emit("before_agent_start", {
+    systemPrompt: "base",
+  });
+  assert.deepEqual(repeated, first);
+  assert.equal(promptEntries(harness.entries).length, 1);
+
+  const [changed] = await harness.emit("before_agent_start", {
+    systemPrompt: "changed base",
+  });
+  assert.equal(promptEntries(harness.entries).length, 2);
+  assert.deepEqual(promptEntries(harness.entries)[1].data, {
+    ...(firstSnapshot.data as Record<string, unknown>),
+    systemPrompt: (changed as { systemPrompt: string }).systemPrompt,
+  });
+
+  // Compare with the latest snapshot, not every prompt ever recorded.
+  await harness.emit("before_agent_start", { systemPrompt: "base" });
+  assert.equal(promptEntries(harness.entries).length, 3);
+  assert.deepEqual(promptEntries(harness.entries)[2], firstSnapshot);
+  assert.equal(latestGoal(harness.entries)?.status, "running");
+});
+
+test("records continuation and resumed Goal ID changes", async () => {
+  const harness = createHarness();
+  await harness.emit("session_start");
+  await harness.command("Task");
+  await harness.emit("before_agent_start", { systemPrompt: "base" });
+  await harness.finishRun();
+  assert.equal(promptEntries(harness.entries).length, 1);
+  await harness.emit("before_agent_start", { systemPrompt: "base" });
+  const continued = promptEntries(harness.entries)[1].data as {
+    goalId: string;
+    continuationCount: number;
+    systemPrompt: string;
+  };
+  assert.equal(continued.goalId, "goal-1");
+  assert.equal(continued.continuationCount, 1);
+  assert.match(continued.systemPrompt, /continuation: 1\/25/);
+
+  await harness.command("stop");
+  await harness.command("resume");
+  await harness.emit("before_agent_start", { systemPrompt: "base" });
+  const resumed = promptEntries(harness.entries)[2].data as typeof continued;
+  assert.equal(resumed.goalId, "goal-2");
+  assert.equal(resumed.continuationCount, 0);
+  assert.match(resumed.systemPrompt, /goal_id: goal-2/);
+  assert.equal(promptEntries(harness.entries).length, 3);
+});
+
+test("restores only the current branch's latest valid prompt as a deduplication baseline", async () => {
+  const source = createHarness();
+  await source.command("Task");
+  await source.emit("before_agent_start", { systemPrompt: "base" });
+  const snapshot = promptEntries(source.entries)[0];
+  const data = snapshot.data as Record<string, unknown>;
+  const invalidSnapshots = [
+    null,
+    [],
+    { ...data, version: 2 },
+    { ...data, goalId: "" },
+    { ...data, goalId: 1 },
+    { ...data, continuationCount: -1 },
+    { ...data, continuationCount: 0.5 },
+    { ...data, continuationCount: "0" },
+    { ...data, systemPrompt: null },
+  ].map((data) => ({ ...snapshot, data }));
+
+  for (const event of ["session_start", "session_tree"]) {
+    // Reuse deterministic IDs to reproduce identical prompt text after restore.
+    const harness = createHarness({ ids: Array(5).fill("goal-1") });
+    const selectBranch = async (branch: Array<Record<string, unknown>>) => {
+      harness.entries.splice(0, harness.entries.length, ...branch);
+      await harness.emit(event);
+      await harness.command("Task");
+      await harness.emit("before_agent_start", { systemPrompt: "base" });
+    };
+
+    const olderSnapshot = {
+      ...snapshot,
+      data: { ...data, systemPrompt: "older snapshot" },
+    };
+    const branch = [olderSnapshot, snapshot, ...invalidSnapshots];
+    await selectBranch(branch);
+    assert.equal(promptEntries(harness.entries).length, branch.length);
+
+    // A different branch must replace the cached baseline, not replay it.
+    await selectBranch([olderSnapshot]);
+    assert.equal(promptEntries(harness.entries).length, 2);
+    assert.deepEqual(promptEntries(harness.entries).at(-1), snapshot);
+
+    // Even though another branch recorded the same prompt, this one has not.
+    await selectBranch([]);
+    assert.deepEqual(promptEntries(harness.entries), [snapshot]);
+
+    // Invalid entries alone cannot supply a baseline.
+    await selectBranch(invalidSnapshots);
+    assert.equal(
+      promptEntries(harness.entries).length,
+      invalidSnapshots.length + 1,
+    );
+    assert.deepEqual(promptEntries(harness.entries).at(-1), snapshot);
+  }
+});
+
+test("does not record or replay prompts for inactive Goals and clears on shutdown", async () => {
+  const harness = createHarness({ ids: ["goal-1", "goal-1"] });
+  await harness.emit("session_start");
+  assert.deepEqual(
+    await harness.emit("before_agent_start", { systemPrompt: "base" }),
+    [undefined],
+  );
+  assert.equal(promptEntries(harness.entries).length, 0);
+  await harness.command("Task");
+  await harness.emit("before_agent_start", { systemPrompt: "base" });
+  await harness.command("stop");
+  assert.deepEqual(
+    await harness.emit("before_agent_start", { systemPrompt: "base" }),
+    [undefined],
+  );
+  assert.equal(promptEntries(harness.entries).length, 1);
+
+  await harness.emit("session_shutdown");
+  await harness.command("Task");
+  await harness.emit("before_agent_start", { systemPrompt: "base" });
+  assert.equal(promptEntries(harness.entries).length, 2);
+
+  // Existing Goal restoration still interrupts the Goal; snapshots do not run it.
+  await harness.emit("session_start");
+  assert.equal(latestGoal(harness.entries)?.status, "interrupted");
+  assert.deepEqual(
+    await harness.emit("before_agent_start", { systemPrompt: "new base" }),
+    [undefined],
+  );
+  assert.equal(promptEntries(harness.entries).length, 2);
 });
 
 test("rejects a second active Goal and resume assigns a new id", async () => {

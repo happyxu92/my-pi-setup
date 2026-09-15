@@ -10,6 +10,7 @@ import { runAdversarialLoop } from "./core.ts";
 import type { GoalAuditSummary, GoalState, RunLoopOptions } from "./types.ts";
 
 const GOAL_STATE_ENTRY = "goal-state";
+const GOAL_SYSTEM_PROMPT_ENTRY = "goal-system-prompt";
 const GOAL_STATUS_KEY = "adversarial-loop-goal";
 const GOAL_KICKOFF = "Start working on the current Goal.";
 
@@ -189,6 +190,8 @@ export function registerGoalFeature(
   const createId = options.createId ?? randomUUID;
   const now = options.now ?? (() => new Date().toISOString());
   let goal: GoalState | undefined;
+  // Audit-only deduplication baseline; never replayed as the runtime prompt.
+  let lastRecordedSystemPrompt: string | undefined;
   let auditController: AbortController | undefined;
   let pendingAudit: AgentEndEvent | undefined;
   let pendingFailedRun:
@@ -224,12 +227,26 @@ export function registerGoalFeature(
     pendingAudit = undefined;
     pendingFailedRun = undefined;
     goal = undefined;
+    lastRecordedSystemPrompt = undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "custom" || entry.customType !== GOAL_STATE_ENTRY) {
-        continue;
+      if (entry.type !== "custom") continue;
+      if (entry.customType === GOAL_STATE_ENTRY) {
+        const restored = parseGoalState(entry.data);
+        if (restored) goal = restored;
+      } else if (entry.customType === GOAL_SYSTEM_PROMPT_ENTRY) {
+        const data = entry.data;
+        if (
+          isRecord(data) &&
+          data.version === 1 &&
+          typeof data.goalId === "string" &&
+          data.goalId.length > 0 &&
+          Number.isSafeInteger(data.continuationCount) &&
+          (data.continuationCount as number) >= 0 &&
+          typeof data.systemPrompt === "string"
+        ) {
+          lastRecordedSystemPrompt = data.systemPrompt;
+        }
       }
-      const restored = parseGoalState(entry.data);
-      if (restored) goal = restored;
     }
 
     if (isLiveGoal(goal)) {
@@ -471,16 +488,26 @@ export function registerGoalFeature(
     pendingAudit = undefined;
     pendingFailedRun = undefined;
     goal = undefined;
+    lastRecordedSystemPrompt = undefined;
   };
   pi.on("session_start", (_event, ctx) => restore(ctx));
   pi.on("session_tree", (_event, ctx) => restore(ctx));
   pi.on("session_shutdown", invalidate);
   pi.on("before_agent_start", (event) => {
     const activeGoal = goal;
-    if (!isLiveGoal(activeGoal)) return;
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${buildGoalSystemPrompt(activeGoal!)}`,
-    };
+    if (!activeGoal || !isLiveGoal(activeGoal)) return;
+    const systemPrompt = `${event.systemPrompt}\n\n${buildGoalSystemPrompt(activeGoal)}`;
+    if (systemPrompt !== lastRecordedSystemPrompt) {
+      // Snapshot this handler's output, not later extensions or provider rewrites.
+      pi.appendEntry(GOAL_SYSTEM_PROMPT_ENTRY, {
+        version: 1,
+        goalId: activeGoal.id,
+        continuationCount: activeGoal.continuationCount,
+        systemPrompt,
+      });
+      lastRecordedSystemPrompt = systemPrompt;
+    }
+    return { systemPrompt };
   });
   pi.on("input", (event, ctx) => {
     if (goal?.status !== "auditing" || event.source === "extension") return;
