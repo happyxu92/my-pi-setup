@@ -24,8 +24,8 @@ test("rejects invalid maximum parallel loop counts", () => {
 });
 
 test("defaults and parses the Goal continuation limit", () => {
-  assert.equal(DEFAULT_GOAL_MAX_CONTINUATIONS, 25);
-  assert.equal(parseGoalMaxContinuations(undefined), 25);
+  assert.equal(DEFAULT_GOAL_MAX_CONTINUATIONS, 5);
+  assert.equal(parseGoalMaxContinuations(undefined), 5);
   assert.equal(parseGoalMaxContinuations(" 40 "), 40);
 });
 

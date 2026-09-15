@@ -1,6 +1,6 @@
 export const DEFAULT_MAX_PARALLEL_LOOPS = 6;
 export const MAX_PARALLEL_LOOPS_FLAG = "adversarial-loop-max-loops";
-export const DEFAULT_GOAL_MAX_CONTINUATIONS = 25;
+export const DEFAULT_GOAL_MAX_CONTINUATIONS = 5;
 export const GOAL_MAX_CONTINUATIONS_FLAG =
   "adversarial-loop-goal-max-continuations";
 

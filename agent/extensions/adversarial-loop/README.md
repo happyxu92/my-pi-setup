@@ -205,7 +205,7 @@ While a Goal is active, `before_agent_start` also saves the full system prompt a
 
 Each audit invokes an evaluator-only adversarial loop with `maxIterations: 0`; this internal mode does not run a generator and does not change the public tool's `maxIterations` range. Audits reserve an exclusive slot in the same pool and block new loop submissions while inspecting the workspace. `/goal stop` cancels background loops and prevents automatic wakeups as well as stopping the audit/main agent. Ordinary user input is blocked while an audit is inspecting the workspace, but `/goal status` and `/goal stop` remain available. Errors and unverified results never mark the goal complete.
 
-The default automatic continuation limit is 25. Configure it with a positive integer:
+The default automatic continuation limit is 5. Configure it with a positive integer:
 
 ```bash
 pi --adversarial-loop-goal-max-continuations 40

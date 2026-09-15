@@ -352,7 +352,7 @@ test("invalid flags fall back to default limits with warnings", async () => {
   const h = await loadExtension("0", "0");
   assert.equal(maximumLoops(h.tool("adversarial_loop")), 6);
   assert.ok(h.notifications.some((message) => /using 6/.test(message)));
-  assert.ok(h.notifications.some((message) => /using 25/.test(message)));
+  assert.ok(h.notifications.some((message) => /using 5/.test(message)));
   await h.emit("session_shutdown");
 });
 
