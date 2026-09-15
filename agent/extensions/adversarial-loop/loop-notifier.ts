@@ -30,19 +30,37 @@ export function summarizeLoop(record: BackgroundLoopRecord) {
   };
 }
 
+export function formatLoopSummary(record: BackgroundLoopRecord) {
+  return `Loop ${record.id}: ${record.status} — task ${JSON.stringify(truncateUtf8(record.task, 512))}`;
+}
+
+export function formatActiveLoops(records: BackgroundLoopRecord[]) {
+  const active = records.filter(isActiveLoop);
+  return active.length
+    ? truncateUtf8(
+        `Active loops at this snapshot (${active.length}):\n${active.map(formatLoopSummary).join("\n")}`,
+        6 * 1024,
+      )
+    : "Active loops at this snapshot: none.";
+}
+
 export function formatBackgroundResults(
   records: BackgroundLoopRecord[],
   capacity: LoopCapacity,
+  sessionRecords: BackgroundLoopRecord[],
 ) {
   const perLoopBytes = Math.max(
     1024,
-    Math.floor((40 * 1024) / Math.max(records.length, 1)),
+    Math.floor((36 * 1024) / Math.max(records.length, 1)),
   );
   return truncateUtf8(
     [
       formatCapacity(capacity),
+      // Keep the active roster ahead of potentially long result reports.
+      formatActiveLoops(sessionRecords),
+      "Results in this message:",
       ...records.map((record) => {
-        const heading = `Loop ${record.id}: ${record.status}`;
+        const heading = formatLoopSummary(record);
         const result =
           record.details &&
           (record.status === "completed" || record.status === "exhausted")
@@ -179,7 +197,7 @@ export class LoopNotifier {
       this.pi.sendMessage(
         {
           customType: LOOP_COMPLETION_MESSAGE,
-          content: `${this.wakeAtActiveCount !== undefined ? "Loop wait ended. " : ""}${resultStatus} Integrate available results, continue independent work, or start additional loops within capacity. Call adversarial_loop_wait alone if no independent work remains.\n\n${formatBackgroundResults(records, capacity)}`,
+          content: `${this.wakeAtActiveCount !== undefined ? "Loop wait ended. " : ""}${resultStatus} Integrate available results, continue independent work, or start additional loops within capacity. Call adversarial_loop_wait alone if no independent work remains.\n\n${formatBackgroundResults(records, capacity, this.manager.records())}`,
           display: true,
           details: notification,
         },

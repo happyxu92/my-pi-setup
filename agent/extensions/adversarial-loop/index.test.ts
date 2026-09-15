@@ -259,6 +259,95 @@ test("LLM-facing guidance and messages omit scheduling mechanics but retain usag
   await h.emit("session_shutdown");
 });
 
+test("startup content maps each input index to its ID and task, including across calls", async () => {
+  const h = await loadExtension();
+  const first = await h.call("adversarial_loop", {
+    loops: [{ task: "Implement A" }, { task: "Review B" }],
+  });
+  const firstText = first.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+  for (const [index, task] of ["Implement A", "Review B"].entries()) {
+    assert.ok(
+      firstText.includes(
+        `loops[${index}] -> Loop ${details(first).loops[index].id}: starting — task "${task}"`,
+      ),
+    );
+  }
+  const second = await h.call("adversarial_loop", {
+    loops: [{ task: "Document C" }],
+  });
+  assert.ok(
+    second.content.some(
+      (part) =>
+        part.type === "text" &&
+        part.text.includes(
+          `loops[0] -> Loop ${details(second).loops[0].id}: starting — task "Document C"`,
+        ),
+    ),
+  );
+  await h.emit("session_shutdown");
+});
+
+test("out-of-order completion content identifies results and active tasks across calls", async () => {
+  const h = await loadExtension();
+  const first = await h.call("adversarial_loop", {
+    loops: [{ task: "Implement A" }],
+  });
+  const second = await h.call("adversarial_loop", {
+    loops: [{ task: "Review B" }],
+  });
+  const a = details(first).loops[0].id;
+  const b = details(second).loops[0].id;
+  await h.emit("agent_end", { messages: [] });
+  h.setIdle(true);
+  await h.emit("agent_settled");
+  h.executions[1].resolve();
+  await notifyTick();
+  assert.equal(h.sent.length, 1);
+  const notification = String(h.sent[0].content);
+  assert.ok(notification.includes(`Loop ${b}: completed — task "Review B"`));
+  assert.ok(notification.includes(`Loop ${a}: running — task "Implement A"`));
+  assert.match(notification, /Active loops at this snapshot \(1\):/);
+  assert.ok(
+    !notification.split("Results in this message:")[0].includes(b),
+    "completed tasks must not appear in the active roster",
+  );
+  // Ready wait results and explicit rereads use the same LLM-visible format.
+  const waited = await h.call("adversarial_loop_wait");
+  const reread = await h.call("adversarial_loop_manage", {
+    action: "result",
+    ids: [b],
+  });
+  for (const result of [waited, reread]) {
+    const text = result.content
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+    assert.ok(text.includes(`Loop ${b}: completed — task "Review B"`));
+    assert.ok(text.includes(`Loop ${a}: running — task "Implement A"`));
+  }
+  const parked = await h.call("adversarial_loop_wait");
+  assert.ok(
+    parked.content.some(
+      (part) =>
+        part.type === "text" && part.text.includes(`Loop ${a}: running`),
+    ),
+  );
+  h.executions[0].resolve();
+  await tick();
+  const final = await h.call("adversarial_loop_manage", {
+    action: "result",
+    ids: [a],
+  });
+  assert.match(
+    JSON.stringify(final.content),
+    /Active loops at this snapshot: none/,
+  );
+  await h.emit("session_shutdown");
+});
+
 test("invalid flags fall back to default limits with warnings", async () => {
   const h = await loadExtension("0", "0");
   assert.equal(maximumLoops(h.tool("adversarial_loop")), 6);

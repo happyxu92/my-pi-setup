@@ -21,8 +21,10 @@ import {
   type LoopManagerOptions,
 } from "./loop-manager.ts";
 import {
+  formatActiveLoops,
   formatBackgroundResults,
   formatCapacity,
+  formatLoopSummary,
   LoopNotifier,
   summarizeLoop,
 } from "./loop-notifier.ts";
@@ -181,7 +183,7 @@ export default function (
             {
               type: "text",
               text: truncateUtf8(
-                `Started background loops: ${records.map((record) => record.id).join(", ")}.\n${formatCapacity(capacity)}\nSubmission is not acceptance. ${result.waiting ? "Main agent yielded. Results will arrive automatically." : "Continue independent work, or call adversarial_loop_wait alone. Results will arrive automatically."}`,
+                `Started background loops (zero-based indices in this call's loops array):\n${records.map((record, index) => `loops[${index}] -> ${formatLoopSummary(record)}`).join("\n")}\n${formatCapacity(capacity)}\nSubmission is not acceptance. ${result.waiting ? "Main agent yielded. Results will arrive automatically." : "Continue independent work, or call adversarial_loop_wait alone. Results will arrive automatically."}`,
                 48 * 1024,
               ),
             },
@@ -214,7 +216,11 @@ export default function (
       let text: string;
       switch (result.reason) {
         case "results_ready":
-          text = formatBackgroundResults(result.records, capacity);
+          text = formatBackgroundResults(
+            result.records,
+            capacity,
+            manager.records(),
+          );
           break;
         case "no_active_loops":
           text = `Not waiting: no active loops remain.\n${formatCapacity(capacity)}`;
@@ -227,7 +233,15 @@ export default function (
           break;
       }
       return {
-        content: [{ type: "text", text }],
+        content: [
+          {
+            type: "text",
+            text:
+              result.reason === "results_ready"
+                ? text
+                : `${text}\n${formatActiveLoops(manager.records())}`,
+          },
+        ],
         details: {
           waiting: result.waiting,
           reason: result.reason,
@@ -276,7 +290,7 @@ export default function (
             type: "text",
             text:
               params.action === "result"
-                ? formatBackgroundResults(records, capacity)
+                ? formatBackgroundResults(records, capacity, manager.records())
                 : truncateUtf8(
                     `${formatCapacity(capacity)}\n${JSON.stringify(records.map(summarizeLoop), null, 2)}`,
                     48 * 1024,

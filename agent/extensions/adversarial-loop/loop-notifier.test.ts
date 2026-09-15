@@ -7,7 +7,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { LoopManager } from "./loop-manager.ts";
-import { LOOP_COMPLETION_MESSAGE, LoopNotifier } from "./loop-notifier.ts";
+import {
+  formatBackgroundResults,
+  LOOP_COMPLETION_MESSAGE,
+  LoopNotifier,
+} from "./loop-notifier.ts";
 import type { RunLoopOptions } from "./types.ts";
 import { emptyUsage } from "./utils.ts";
 
@@ -96,6 +100,72 @@ function harness(limit = 3) {
     },
   };
 }
+
+test("result content identifies failed tasks and includes starting/running/cancelling loops only", () => {
+  const h = harness(6);
+  const records = h.start(6);
+  const statuses = [
+    "starting",
+    "running",
+    "cancelling",
+    "error",
+    "exhausted",
+    "completed",
+  ] as const;
+  records.forEach((record, index) => {
+    record.status = statuses[index];
+    record.task = `任务 ${index}\nDetails`;
+  });
+  const text = formatBackgroundResults(
+    records.slice(3),
+    h.manager.capacity(),
+    records,
+  );
+  const [roster, results] = text.split("Results in this message:");
+  for (const [index, record] of records.entries()) {
+    const line = `Loop ${record.id}: ${record.status} — task ${JSON.stringify(record.task)}`;
+    assert.ok((index < 3 ? roster : results).includes(line));
+    assert.ok(!(index < 3 ? results : roster).includes(record.id));
+  }
+  assert.match(text, /Only completed loops passed independent acceptance/);
+  h.notifier.dispose();
+});
+
+test("large reports retain task identities and the active roster within the output budget", () => {
+  const h = harness(12);
+  const records = h.start(12);
+  records.forEach((record, index) => {
+    record.task = `Task ${index}: ${"说明".repeat(1000)}`;
+    if (index >= 6) return;
+    record.status = "completed";
+    record.details = {
+      status: "completed",
+      task: record.task,
+      model: record.model,
+      maxIterations: 1,
+      criteria: [],
+      rounds: [],
+    };
+    record.latestGeneratorReport = "report".repeat(20000);
+  });
+  const text = formatBackgroundResults(
+    records.slice(0, 6),
+    h.manager.capacity(),
+    records,
+  );
+  assert.ok(Buffer.byteLength(text) <= 48 * 1024);
+  const [roster, results] = text.split("Results in this message:");
+  records.forEach((record, index) => {
+    assert.ok(
+      (index < 6 ? results : roster).includes(
+        `Loop ${record.id}: ${record.status}`,
+      ),
+    );
+    assert.ok((index < 6 ? results : roster).includes(`Task ${index}:`));
+  });
+  assert.match(text, /\[truncated\]/);
+  h.notifier.dispose();
+});
 
 for (const waiting of [false, true])
   for (const hasResults of [false, true])
