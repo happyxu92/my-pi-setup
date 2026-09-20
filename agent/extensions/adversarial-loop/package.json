@@ -1,6 +1,6 @@
 {
   "name": "@happyxu92/pi-adversarial-loop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Evaluator-generator delivery loops for the Pi coding agent",
   "type": "module",
   "license": "MIT",
