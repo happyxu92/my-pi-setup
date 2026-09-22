@@ -194,7 +194,7 @@ function agentEndEvent(stopReason = "stop") {
   };
 }
 
-test("creates and persists a Goal, sends only a kickoff, and injects its task", async () => {
+test("creates and persists a Goal with its task in both user and system prompts", async () => {
   const harness = createHarness();
   await harness.emit("session_start");
   await harness.command("Implement the feature");
@@ -204,7 +204,10 @@ test("creates and persists a Goal, sends only a kickoff, and injects its task", 
   assert.equal(goal?.task, "Implement the feature");
   assert.equal(goal?.status, "running");
   assert.deepEqual(harness.sent, [
-    { content: "Start working on the current Goal.", options: undefined },
+    {
+      content: "Start working on the current Goal.\n\nOriginal task:\nImplement the feature",
+      options: undefined,
+    },
   ]);
 
   const [promptResult] = await harness.emit("before_agent_start", {
@@ -219,7 +222,7 @@ test("creates and persists a Goal, sends only a kickoff, and injects its task", 
     /Do not proactively call adversarial_loop|Only an independent audit can complete the Goal/,
   );
   assert.ok(harness.statuses.some((status) => status?.includes("running")));
-  assert.doesNotMatch(harness.sent[0].content, /Implement the feature/);
+  assert.match(harness.sent[0].content, /Implement the feature/);
 
   await harness.emit("session_compact", { type: "session_compact" });
   const [afterCompaction] = await harness.emit("before_agent_start", {
@@ -403,6 +406,10 @@ test("rejects a second active Goal and resume assigns a new id", async () => {
   assert.equal(resumed?.previousId, "first-id");
   assert.equal(resumed?.continuationCount, 0);
   assert.equal(harness.sent.length, 2);
+  assert.equal(
+    harness.sent[1].content,
+    "Start working on the current Goal.\n\nOriginal task:\nFirst task",
+  );
 });
 
 test("runs an evaluator-only loop only after agent_settled and queues feedback", async () => {
@@ -422,7 +429,23 @@ test("runs an evaluator-only loop only after agent_settled and queues feedback",
   assert.equal(goal?.status, "running");
   assert.equal(goal?.continuationCount, 1);
   assert.equal(harness.sent.at(-1)?.options?.deliverAs, "followUp");
-  assert.match(harness.sent.at(-1)?.content ?? "", /Finish the missing work/);
+  assert.equal(
+    harness.sent.at(-1)?.content,
+    [
+      "Continue working on the current Goal.",
+      "",
+      "Original task:",
+      "Finish the task",
+      "",
+      "Audit summary: Incomplete",
+      "",
+      "Checks not yet passing:",
+      "- C1 [fail]: Still missing",
+      "",
+      "Required follow-up:",
+      "- Finish the missing work",
+    ].join("\n"),
+  );
 });
 
 test("completes on evaluator acceptance and stops at the continuation limit", async () => {
@@ -466,6 +489,30 @@ test("restores an active Goal as interrupted and resumes with a new id", async (
   await harness.command("resume");
   assert.equal(latestGoal(harness.entries)?.id, "new-id");
   assert.equal(latestGoal(harness.entries)?.continuationCount, 0);
+  assert.equal(
+    harness.sent[0].content,
+    "Start working on the current Goal.\n\nOriginal task:\nPersisted task",
+  );
+});
+
+test("preserves a multiline task across kickoff, continuations, and restored resume", async () => {
+  const task = '实现 "feature"。\n\n- Keep `existing behavior`\n- Verify edge cases';
+  const harness = createHarness();
+  await harness.command(task);
+  await harness.finishRun();
+  await harness.finishRun();
+  assert.equal(harness.sent.length, 3);
+  for (const message of harness.sent) {
+    assert.ok(message.content.includes(`Original task:\n${task}`));
+  }
+
+  const restored = createHarness({ initialEntries: harness.entries });
+  await restored.emit("session_start");
+  await restored.command("resume");
+  assert.equal(
+    restored.sent[0].content,
+    `Start working on the current Goal.\n\nOriginal task:\n${task}`,
+  );
 });
 
 test("blocks ordinary input while auditing but allows extension follow-ups", async () => {

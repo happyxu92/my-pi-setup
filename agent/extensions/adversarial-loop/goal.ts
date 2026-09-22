@@ -138,7 +138,13 @@ When the task requires exploring multiple approaches:
 - Reopen a blocked approach only when a genuinely new mechanism, method, perspective, or source of evidence emerges.`;
 }
 
+function buildGoalUserPrompt(task: string, instruction = GOAL_KICKOFF) {
+  // Keep the original task in conversation history for compaction summaries.
+  return `${instruction}\n\nOriginal task:\n${task}`;
+}
+
 function buildContinuationPrompt(
+  task: string,
   audit: GoalAuditSummary,
   details: Awaited<ReturnType<typeof runAdversarialLoop>>["details"],
 ) {
@@ -152,7 +158,7 @@ function buildContinuationPrompt(
       ) ?? [];
   const feedback = audit.feedback.map((item) => `- ${item}`);
   return [
-    "Continue working on the current Goal.",
+    buildGoalUserPrompt(task, "Continue working on the current Goal."),
     "",
     `Audit summary: ${audit.summary}`,
     ...(checks.length > 0 ? ["", "Checks not yet passing:", ...checks] : []),
@@ -355,9 +361,10 @@ export function registerGoalFeature(
         lastAudit: audit,
         error: undefined,
       });
-      pi.sendUserMessage(buildContinuationPrompt(audit, result.details), {
-        deliverAs: "followUp",
-      });
+      pi.sendUserMessage(
+        buildContinuationPrompt(goal.task, audit, result.details),
+        { deliverAs: "followUp" },
+      );
     } catch (error) {
       if (goal?.id !== goalId) return;
       if (signal.aborted) {
@@ -423,7 +430,7 @@ export function registerGoalFeature(
           updatedAt: now(),
         });
         try {
-          pi.sendUserMessage(GOAL_KICKOFF);
+          pi.sendUserMessage(buildGoalUserPrompt(goal.task));
         } catch (error) {
           transition(ctx, { status: "error", error: getErrorMessage(error) });
           ctx.ui.notify(
@@ -471,7 +478,7 @@ export function registerGoalFeature(
         updatedAt: timestamp,
       });
       try {
-        pi.sendUserMessage(GOAL_KICKOFF);
+        pi.sendUserMessage(buildGoalUserPrompt(command));
       } catch (error) {
         transition(ctx, { status: "error", error: getErrorMessage(error) });
         ctx.ui.notify(
