@@ -13,6 +13,7 @@ my-pi-setup/
 │   │   ├── adversarial-loop/      # Adversarial evaluator-generator task loop
 │   │   ├── codex-fast.ts          # Enables the Fast service tier for Codex subscriptions
 │   │   ├── enable-grep-find.ts    # Enables pi's built-in grep/find tools by default
+│   │   ├── manual-retry/          # Manually retries rate-limit/503 failures without new LLM-visible messages
 │   │   ├── pi-accounts/           # OAuth account manager with per-project defaults
 │   │   ├── pi-undo/               # Local workspace undo/redo extension
 │   │   ├── tokens-per-second.ts   # Displays the real-time token/s rate in the status bar
@@ -100,6 +101,7 @@ This repository also includes a local fork of `@narumitw/pi-accounts` with proje
 | **adversarial-loop** | Registers the `adversarial_loop` tool. For code and non-code deliverables with strict completion criteria or high quality requirements, it uses independent evaluator and generator subprocesses to establish acceptance criteria, iteratively improve the deliverable, and verify it independently until it passes or reaches a safety limit. |
 | **codex-fast** | Injects `service_tier: "priority"` into `openai-codex` subscription requests to enable the Codex Fast service tier. Actual availability depends on the account, plan, and model permissions. |
 | **enable-grep-find** | Enables pi's built-in `grep` and `find` tools, which are disabled by default. It adds them to the active tool list automatically during the `session_start` event. |
+| **manual-retry** | `/retry-last` retries the last rate-limit/quota or 503/service-unavailable failure after Pi stops, without adding a user message to the model request. Keeps normal automatic retries unchanged. Requires Pi 0.87.1+. See [usage and limitations](agent/extensions/manual-retry/README.md). |
 | **pi-accounts** | Local fork of `@narumitw/pi-accounts@0.52.0`. `/accounts` manages OAuth accounts and project defaults in `<cwd>/.pi/pi-accounts.json`; existing sessions keep their own selections. Requires Pi 0.85.1+. |
 | **pi-undo** | Based on `@davideasden/pi-undo@0.2.11`, with directory-exclusion support and a fix for logical-leaf comparison in `/tree`. Project configuration is stored in `<workspace>/.pi/pi-undo.json`. |
 | **tokens-per-second** | Displays the token generation rate (`tok/s`) for the current streaming response in the status bar. It shows `… tok/s` when streaming begins and the measured rate when streaming ends. |

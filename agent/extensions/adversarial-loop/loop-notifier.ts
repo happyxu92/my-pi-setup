@@ -291,8 +291,9 @@ export class LoopNotifier {
     this.ending = false;
     const seen = new Set<string>();
     const filtered = messages.filter((message) => {
+      // Validate runtime shape without narrowing Pi's discriminated message union.
       if (
-        !isRecord(message) ||
+        !isRecord(message as unknown) ||
         message.role !== "custom" ||
         message.customType !== LOOP_COMPLETION_MESSAGE ||
         !isRecord(message.details)
