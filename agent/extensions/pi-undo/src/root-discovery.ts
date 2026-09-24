@@ -8,6 +8,7 @@ import type { DiscoveryRoot } from "./model.ts";
 const DIRECTORY_SCAN_CONCURRENCY = 16;
 
 export const DEFAULT_EXCLUDED_DIRECTORY_NAMES = [
+  ".lake",
   ".pytest_cache",
   ".ruff_cache",
   ".venv",

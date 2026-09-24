@@ -259,7 +259,7 @@ export async function createPiUndoRuntime(
       return workspaceLock.acquire(initialTopology.workspaceIdentity);
     },
     findUserEntryAfter: (startEntryId) =>
-      findUserEntryAfter(manager, startEntryId),
+      sessionStateFor(manager).findUserEntryAfter(startEntryId),
     resolveSessionTarget: (action, checkpoint) =>
       action === "undo"
         ? logicalLeafAt(manager, entryParent(manager, checkpoint.userEntryId))
@@ -487,25 +487,6 @@ function sourceFor(
     getLeafId: () => (leafId === undefined ? manager.getLeafId() : leafId),
     getSessionFile: () => manager.getSessionFile(),
   };
-}
-
-function findUserEntryAfter(
-  manager: ReadonlySessionManager,
-  startEntryId: string,
-): string | null {
-  const entries = manager.getEntries() as unknown[];
-  for (const value of entries) {
-    if (
-      !isRecord(value) ||
-      value.parentId !== startEntryId ||
-      value.type !== "message" ||
-      !isRecord(value.message)
-    )
-      continue;
-    if (value.message.role === "user" && typeof value.id === "string")
-      return value.id;
-  }
-  return null;
 }
 
 function entryParent(

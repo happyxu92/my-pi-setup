@@ -51,6 +51,14 @@ export class SessionState {
     return this.physicalBranch().filter((entry) => !isUndoControlEntry(entry));
   }
 
+  findUserEntryAfter(startEntryId: string) {
+    const branch = this.physicalBranch();
+    return userEntryAfterStart(
+      branch,
+      branch.findIndex((entry) => entry.id === startEntryId),
+    );
+  }
+
   /**
    * 只投影属于已核验 session identity 的可信 checkpoint。
    *
@@ -70,7 +78,15 @@ export class SessionState {
         continue;
       try {
         const checkpoint = checkpointFromEntry(entry, sessionIdentity);
-        if (isCheckpointChainTrusted(checkpoint, entry.id, positions, entries))
+        if (
+          isCheckpointChainTrusted(
+            checkpoint,
+            entry.id,
+            branch,
+            positions,
+            entries,
+          )
+        )
           candidates.push(checkpoint);
       } catch {
         // Session 历史是外部持久化输入；无效 checkpoint 只能被排除。
@@ -471,9 +487,28 @@ function checkpointFromEntry(
   return record as unknown as CheckpointRecord;
 }
 
+// Pi may persist initial or updated system messages between before_agent_start
+// and the user message. Only skip those messages, never another run or barrier.
+// Callers supply the validated active branch, not append order across branches.
+function userEntryAfterStart(branch: readonly SessionEntry[], start: number) {
+  const startEntry = branch[start];
+  if (
+    startEntry?.type !== "custom" ||
+    startEntry.customType !== "pi-undo:start"
+  )
+    return null;
+  for (let index = start + 1; index < branch.length; index += 1) {
+    const entry = branch[index]!;
+    if (isMessageRole(entry, "system")) continue;
+    return isMessageRole(entry, "user") ? entry.id : null;
+  }
+  return null;
+}
+
 function isCheckpointChainTrusted(
   checkpoint: CheckpointRecord,
   checkpointEntryId: string,
+  branch: readonly SessionEntry[],
   positions: ReadonlyMap<string, number>,
   entries: ReadonlyMap<string, SessionEntry>,
 ): boolean {
@@ -481,8 +516,6 @@ function isCheckpointChainTrusted(
   const user = positions.get(checkpoint.userEntryId);
   const end = positions.get(checkpoint.endLeafId);
   const checkpointEntry = positions.get(checkpointEntryId);
-  const startEntry = entries.get(checkpoint.startEntryId);
-  const userEntry = entries.get(checkpoint.userEntryId);
   const endEntry = entries.get(checkpoint.endLeafId);
   const checkpointRecord = entries.get(checkpointEntryId);
   return (
@@ -493,10 +526,7 @@ function isCheckpointChainTrusted(
     start < user &&
     user <= end &&
     end < checkpointEntry &&
-    startEntry?.type === "custom" &&
-    startEntry.customType === "pi-undo:start" &&
-    userEntry?.parentId === checkpoint.startEntryId &&
-    isMessageRole(userEntry, "user") &&
+    userEntryAfterStart(branch, start) === checkpoint.userEntryId &&
     endEntry !== undefined &&
     !isUndoControlEntry(endEntry) &&
     checkpointRecord !== undefined &&

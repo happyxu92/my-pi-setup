@@ -46,6 +46,12 @@ test("default cache directory names are ignored at any depth", async () => {
     const initialTopology = await discovery.discover(workspace);
     assert.deepEqual(initialTopology.ignoredDirectoryPaths, []);
 
+    for (const directory of [".lake", "packages/lean/.lake"]) {
+      await mkdir(join(workspace, directory, "packages", "mathlib", ".git"), {
+        recursive: true,
+      });
+      await writeFile(join(workspace, directory, "state"), "lake");
+    }
     await mkdir(join(workspace, "packages", "app", ".pytest_cache", ".git"), {
       recursive: true,
     });
@@ -72,8 +78,10 @@ test("default cache directory names are ignored at any depth", async () => {
 
     const refreshedTopology = await discovery.discover(workspace);
     assert.deepEqual(refreshedTopology.ignoredDirectoryPaths, [
+      ".lake",
       "packages/app/.pytest_cache",
       "packages/app/.venv",
+      "packages/lean/.lake",
       "packages/web/node_modules",
       "tools/.ruff_cache",
     ]);
@@ -88,8 +96,10 @@ test("default cache directory names are ignored at any depth", async () => {
     });
     const manifest = await store.capture(initialTopology);
     assert.deepEqual(manifest.roots[0]?.ignoredPresentPaths, [
+      ".lake",
       "packages/app/.pytest_cache",
       "packages/app/.venv",
+      "packages/lean/.lake",
       "packages/web/node_modules",
       "tools/.ruff_cache",
     ]);
@@ -98,6 +108,13 @@ test("default cache directory names are ignored at any depth", async () => {
         .filter((entry) => entry.kind !== "directory")
         .map((entry) => entry.relativePath),
       ["packages/app/src/kept.py"],
+    );
+    for (const directory of [".lake", "packages/lean/.lake"]) {
+      await writeFile(join(workspace, directory, "state"), "rebuilt");
+    }
+    assert.equal(
+      (await store.capture(initialTopology)).manifestId,
+      manifest.manifestId,
     );
   } finally {
     await rm(parent, { recursive: true, force: true });
